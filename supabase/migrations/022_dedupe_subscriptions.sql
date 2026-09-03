@@ -1,0 +1,70 @@
+-- 022: subscriptions 去重 + 防止再次發生
+--
+-- 症狀：訂閱管理頁同一課程列出三張一模一樣的卡。
+-- 根因：src/app/api/payment/callback/route.ts 付款成功後**無條件 insert** 一筆
+--       status='active' 的訂閱，沒有先把該 (user_id, service_id) 的舊 active 收掉。
+--       同一課程重複付款 / 重複回呼就會累積多筆 active。
+-- 現況（2026-08-13 實測）：active 共 19 筆，其中 1 位用戶的同一課程有 3 筆。
+--
+-- ⚠️ 這是資料操作，不會自動執行。請依序手動跑，STEP 3 有前置條件。
+
+-- ═══════════════════════════════════════════════════════════════
+-- STEP 1（只讀）：確認有哪些重複
+-- ═══════════════════════════════════════════════════════════════
+--
+-- SELECT user_id, service_id, count(*) AS 筆數,
+--        min(created_at) AS 最早, max(created_at) AS 最晚
+-- FROM public.subscriptions
+-- WHERE status = 'active'
+-- GROUP BY user_id, service_id
+-- HAVING count(*) > 1;
+
+-- ═══════════════════════════════════════════════════════════════
+-- STEP 2（寫入）：每組只留一筆，其餘標記為 superseded
+--
+-- 保留規則：ends_at 最晚者優先；同 ends_at 取 created_at 最新者。
+-- 不刪除資料 —— 標記成 'superseded' 保留可追溯性（付款紀錄仍對得起來）。
+-- ═══════════════════════════════════════════════════════════════
+--
+-- WITH ranked AS (
+--   SELECT id,
+--          row_number() OVER (
+--            PARTITION BY user_id, service_id
+--            ORDER BY ends_at DESC, created_at DESC
+--          ) AS rn
+--   FROM public.subscriptions
+--   WHERE status = 'active'
+-- )
+-- UPDATE public.subscriptions s
+-- SET status = 'superseded'
+-- FROM ranked r
+-- WHERE s.id = r.id AND r.rn > 1;
+--
+-- 預期：影響 2 筆（19 → 17 筆 active）
+--
+-- 驗證（跑完應回 0 列）：
+-- SELECT user_id, service_id, count(*) FROM public.subscriptions
+-- WHERE status = 'active' GROUP BY user_id, service_id HAVING count(*) > 1;
+
+-- ═══════════════════════════════════════════════════════════════
+-- STEP 3（防呆索引）：⚠️ 必須先修好 code 再跑，否則付款會失敗
+--
+-- 前置條件：payment/callback 要改成「先收掉舊的 active、再 insert」，
+--           例如 insert 前先：
+--             UPDATE subscriptions SET status = 'expired'
+--             WHERE user_id = ? AND service_id = ? AND status = 'active';
+--           （或改成 upsert 直接延長 ends_at）
+--
+-- 沒改就加索引 → 續訂時第二次 insert 會撞唯一鍵，付款成功但訂閱寫不進去。
+-- ═══════════════════════════════════════════════════════════════
+--
+-- CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_one_active
+--   ON public.subscriptions (user_id, service_id)
+--   WHERE status = 'active';
+
+-- ═══════════════════════════════════════════════════════════════
+-- 還原
+-- ═══════════════════════════════════════════════════════════════
+--
+-- DROP INDEX IF EXISTS idx_subscriptions_one_active;
+-- UPDATE public.subscriptions SET status = 'active' WHERE status = 'superseded';

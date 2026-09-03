@@ -1,0 +1,33 @@
+-- 021: 測試階段價格統一 NT$5
+--
+-- 背景：公私版方案原本各有一套定義（名稱、額度、價格全部對不起來）。
+--   決議：以公版為準 —— 名稱與額度不動（basic 50 / advanced 100 / premium 200），
+--   私版 src/lib/billing/plans.ts 已對齊；價格在測試階段兩邊統一 NT$5。
+--
+-- ⚠️ 這是資料操作，不會自動執行。請先跑 STEP 1 確認現況，再手動跑 STEP 2。
+-- ⚠️ 正式上線前務必把價格改回真實金額（見檔尾還原語法）。
+
+-- ═══════════════════════════════════════════════════════════════
+-- STEP 1（只讀）：確認現況
+-- ═══════════════════════════════════════════════════════════════
+--
+-- SELECT code, name, price, renewal_price, monthly_charge, monthly_dialog_count
+-- FROM public.plans ORDER BY sort_order;
+--
+-- 預期：basic 100 / advanced 200 / premium 300，額度 50 / 100 / 200
+
+-- ═══════════════════════════════════════════════════════════════
+-- STEP 2（寫入）：價格統一 5，額度不動
+-- ═══════════════════════════════════════════════════════════════
+--
+-- UPDATE public.plans
+-- SET price = 5, renewal_price = 5, monthly_charge = 5, updated_at = NOW()
+-- WHERE code IN ('basic', 'advanced', 'premium');
+
+-- ═══════════════════════════════════════════════════════════════
+-- 還原（正式上線前）：改回真實價格
+-- ═══════════════════════════════════════════════════════════════
+--
+-- UPDATE public.plans SET price = 100, renewal_price = 100, monthly_charge = 100, updated_at = NOW() WHERE code = 'basic';
+-- UPDATE public.plans SET price = 200, renewal_price = 200, monthly_charge = 200, updated_at = NOW() WHERE code = 'advanced';
+-- UPDATE public.plans SET price = 300, renewal_price = 300, monthly_charge = 300, updated_at = NOW() WHERE code = 'premium';
