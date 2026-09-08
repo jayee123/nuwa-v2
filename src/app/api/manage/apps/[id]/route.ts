@@ -1,15 +1,17 @@
 import { NextResponse } from 'next/server'
 import { getAdminCtx, canManageApp } from '@/lib/app-access'
 import { logAudit } from '@/lib/audit'
-import { PLAN_CODES, isPlanCode } from '@/lib/plans'
+import { GATEABLE_PLAN_CODES, isGateablePlan } from '@/lib/plans'
 
 // Market App Registry 單一 App 操作
 // PATCH  /api/manage/apps/:id        → 修改（限有權管理該 App 者；slug/db_schema 鎖定）
 // DELETE /api/manage/apps/:id        → 軟刪下架（限有權管理者）
 // DELETE /api/manage/apps/:id?hard=1 → 硬刪（限 superadmin）
 
-const EDITABLE = ['name', 'tagline', 'icon', 'app_url', 'admin_url', 'required_plan', 'status', 'sort_order'] as const
-const VALID_STATUS = ['draft', 'active', 'archived']
+const EDITABLE = ['name', 'tagline', 'icon', 'app_url', 'admin_url', 'required_plan', 'status', 'sort_order', 'trial_days'] as const
+// internal = 封測（migration 025）：首頁顯示「即將推出」，只有持該 App 邀請碼者進得去
+const VALID_STATUS = ['draft', 'internal', 'active', 'archived']
+const TRIAL_DAYS_MAX = 365
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const ctx = await getAdminCtx()
@@ -25,12 +27,20 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     return NextResponse.json({ error: '沒有可更新的欄位（slug / db_schema 不可修改）' }, { status: 400 })
   }
   if (updates.status && !VALID_STATUS.includes(updates.status as string)) {
-    return NextResponse.json({ error: 'status 必須是 draft / active / archived' }, { status: 400 })
+    return NextResponse.json({ error: `status 必須是 ${VALID_STATUS.join(' / ')}` }, { status: 400 })
+  }
+  // 試用天數：0 = 關閉此 App 的免費試用（launch 端直接導訂閱頁）。
+  // 已存在的試用紀錄不追溯（expires_at 建立時定死，見 PAYMENT_BOUNDARIES §B.1）。
+  if ('trial_days' in updates) {
+    const d = updates.trial_days
+    if (typeof d !== 'number' || !Number.isInteger(d) || d < 0 || d > TRIAL_DAYS_MAX) {
+      return NextResponse.json({ error: `trial_days 必須是 0–${TRIAL_DAYS_MAX} 的整數（0 = 關閉試用）` }, { status: 400 })
+    }
   }
   // 同 POST：門檻值不合法時 launch 端會 fail closed，把整個 App 安靜鎖住
-  if (updates.required_plan && !isPlanCode(updates.required_plan)) {
+  if (updates.required_plan && !isGateablePlan(updates.required_plan)) {
     return NextResponse.json(
-      { error: `進入門檻方案必須是 ${PLAN_CODES.join(' / ')} 其中之一，或留空` },
+      { error: `進入門檻方案必須是 ${GATEABLE_PLAN_CODES.join(' / ')} 其中之一；不限方案請留空` },
       { status: 400 },
     )
   }

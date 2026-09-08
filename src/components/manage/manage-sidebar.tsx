@@ -13,6 +13,7 @@ import {
   Tags,
   FileCode2,
   Ticket,
+  Timer,
   History,
   Cpu,
   Settings,
@@ -40,6 +41,7 @@ const SECTIONS = [
     items: [
       { href: '/manage/apps', label: 'App 管理', icon: LayoutGrid },
       { href: '/manage/invites', label: '邀請碼', icon: Ticket },
+      { href: '/manage/trials', label: '試用紀錄', icon: Timer },
       { href: '/manage/dev-docs', label: '串接文件', icon: FileCode2 },
     ],
   },

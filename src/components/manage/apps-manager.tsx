@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Plus, Pencil, Archive, Trash2, Copy, X, ExternalLink, RotateCcw, Shield } from 'lucide-react'
-import { PLAN_CODES } from '@/lib/plans'
+import { GATEABLE_PLAN_CODES } from '@/lib/plans'
 
 export interface AppRow {
   id: string
@@ -19,6 +19,7 @@ export interface AppRow {
   required_plan: string | null
   status: string
   sort_order: number
+  trial_days: number
   user_count: number
   created_at: string
   updated_at: string
@@ -26,6 +27,7 @@ export interface AppRow {
 
 const STATUS_META: Record<string, { label: string; cls: string }> = {
   draft: { label: '草稿', cls: 'bg-gray-100 text-gray-600' },
+  internal: { label: '封測中', cls: 'bg-amber-100 text-amber-700' },
   active: { label: '上架', cls: 'bg-green-100 text-green-700' },
   archived: { label: '已下架', cls: 'bg-red-50 text-red-500' },
 }
@@ -41,10 +43,11 @@ type FormState = {
   required_plan: string
   status: string
   sort_order: number
+  trial_days: number
 }
 
 const EMPTY_FORM: FormState = {
-  slug: '', name: '', tagline: '', icon: '', app_url: '', admin_url: '', db_schema: '', required_plan: '', status: 'draft', sort_order: 0,
+  slug: '', name: '', tagline: '', icon: '', app_url: '', admin_url: '', db_schema: '', required_plan: '', status: 'draft', sort_order: 0, trial_days: 14,
 }
 
 interface AppAdminRow {
@@ -79,7 +82,7 @@ export function AppsManager({ initialApps, isSuper }: { initialApps: AppRow[]; i
     setForm({
       slug: app.slug, name: app.name, tagline: app.tagline ?? '', icon: app.icon ?? '',
       app_url: app.app_url ?? '', admin_url: app.admin_url ?? '', db_schema: app.db_schema, required_plan: app.required_plan ?? '',
-      status: app.status, sort_order: app.sort_order,
+      status: app.status, sort_order: app.sort_order, trial_days: app.trial_days ?? 14,
     })
     setError(null)
     setModal({ type: 'edit', app })
@@ -118,6 +121,7 @@ export function AppsManager({ initialApps, isSuper }: { initialApps: AppRow[]; i
         body: JSON.stringify({
           name: form.name.trim(), tagline: form.tagline, icon: form.icon, app_url: form.app_url, admin_url: form.admin_url,
           required_plan: form.required_plan || null, status: form.status, sort_order: Number(form.sort_order) || 0,
+          trial_days: Number.isInteger(Number(form.trial_days)) ? Number(form.trial_days) : 14,
         }),
       })
       const json = await res.json()
@@ -344,7 +348,7 @@ export function AppsManager({ initialApps, isSuper }: { initialApps: AppRow[]; i
                 <Field label="進入門檻方案（不限＝免費可進）">
                   <select value={form.required_plan} onChange={(e) => setForm({ ...form, required_plan: e.target.value })} className="input">
                     <option value="">（不限方案）</option>
-                    {PLAN_CODES.filter((c) => c !== 'free').map((c) => (
+                    {GATEABLE_PLAN_CODES.map((c) => (
                       <option key={c} value={c}>{c}</option>
                     ))}
                   </select>
@@ -353,9 +357,19 @@ export function AppsManager({ initialApps, isSuper }: { initialApps: AppRow[]; i
                   <Field label="狀態">
                     <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })} className="input">
                       <option value="draft">草稿</option>
+                      <option value="internal">封測中（僅邀請碼可進）</option>
                       <option value="active">上架</option>
                       <option value="archived">已下架</option>
                     </select>
+                  </Field>
+                )}
+                {modal.type === 'edit' && (
+                  <Field label="免費試用天數（0 = 關閉試用；改動不追溯既有試用）">
+                    <input
+                      type="number" min={0} max={365} step={1} value={form.trial_days}
+                      onChange={(e) => setForm({ ...form, trial_days: Number(e.target.value) })}
+                      className="input"
+                    />
                   </Field>
                 )}
               </div>

@@ -4,15 +4,9 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { PLAN_LABEL } from '@/lib/plans'
 
 export const metadata: Metadata = { title: '訂閱管理 — 羽升幸福養成學苑' }
-
-const PLAN_LABEL: Record<string, string> = {
-  free: '免費',
-  basic: '基本',
-  advanced: '進階',
-  premium: 'Premium',
-}
 
 export default async function SubscribeManagePage() {
   const supabase = await createClient()

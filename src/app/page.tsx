@@ -55,10 +55,26 @@ const TEACHERS = [
   },
 ]
 
-async function getActiveAppSlugs(): Promise<Set<string>> {
+// 首頁 App 卡改由 apps 表驅動（封測動線測試回報・發現 02/09）：
+// 後台新增 App 首頁就會出現、切 status 首頁跟著動。
+// status 在渲染端用 switch 而非布林 —— 定案 §03 預留了「只開放給付費會員與受邀者」
+// 這類未來狀態，別把兩態寫死。
+type HomeAppRow = {
+  slug: string
+  name: string
+  tagline: string | null
+  icon: string | null
+  status: string
+}
+
+async function getLaunchableApps(): Promise<HomeAppRow[]> {
   const admin = createAdminClient()
-  const { data } = await admin.from('apps').select('slug').eq('status', 'active')
-  return new Set((data ?? []).map((a) => a.slug as string))
+  const { data } = await admin
+    .from('apps')
+    .select('slug, name, tagline, icon, status')
+    .in('status', ['active', 'internal'])
+    .order('sort_order', { ascending: true })
+  return (data ?? []) as HomeAppRow[]
 }
 
 // 登入會員「已進過哪些 App」（user_apps 綁定）→ 判斷首次 vs 回訪（每會員一次）
@@ -76,8 +92,13 @@ async function getLaunchedSlugs(): Promise<{ loggedIn: boolean; launched: Set<st
 
 export default async function HomePage() {
   const services = await getActiveServices()
-  const appSlugs = await getActiveAppSlugs()
+  const apps = await getLaunchableApps()
   const { loggedIn, launched } = await getLaunchedSlugs()
+
+  // App 卡（apps 表驅動）＋ 還沒有 App 的課程（services 表，維持「敬請期待」預告位）
+  const serviceByCode = new Map(services.map((s) => [s.code, s]))
+  const appCards = apps.map((app) => ({ app, svc: serviceByCode.get(app.slug) ?? null }))
+  const teaserServices = services.filter((s) => !apps.some((a) => a.slug === s.code))
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -172,41 +193,46 @@ export default async function HomePage() {
               <h2 className="font-heading text-2xl font-bold text-fg-primary">所有 App</h2>
             </div>
             <div className="mt-8 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-              {services.map((svc) => {
-                const isActiveApp = appSlugs.has(svc.code)
+              {/* apps 表驅動的卡片：status 用 switch 心態渲染，
+                  active / internal 之外的值（含未來的「付費會員＋受邀者」狀態）一律當預告位 */}
+              {appCards.map(({ app, svc }) => {
+                const name = svc?.name ?? app.name
+                const description = svc?.description ?? app.tagline ?? ''
                 return (
                   <div
-                    key={svc.code}
+                    key={app.slug}
                     className="flex h-full flex-col overflow-hidden rounded-2xl border border-surface-secondary bg-white shadow-sm"
                   >
                     <div className="relative aspect-[16/9] overflow-hidden bg-surface-secondary">
-                      {svc.banner_url ? (
-                        <Image src={svc.banner_url} alt={svc.name} fill className="object-cover" />
-                      ) : null}
-                      {!isActiveApp && (
+                      {svc?.banner_url ? (
+                        <Image src={svc.banner_url} alt={name} fill className="object-cover" />
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-5xl">{app.icon || '📦'}</div>
+                      )}
+                      {app.status === 'internal' && (
                         <div className="absolute inset-0 flex items-center justify-center bg-black/40">
                           <span className="rounded-full bg-white/90 px-4 py-1.5 text-sm font-medium text-fg-primary">
-                            敬請期待
+                            封測中・即將推出
                           </span>
                         </div>
                       )}
                     </div>
                     <div className="flex flex-1 flex-col p-5">
-                      <h3 className="font-heading text-lg font-bold text-fg-primary">{svc.name}</h3>
-                      <p className="mt-1 flex-1 text-sm text-fg-secondary">{svc.description ?? ''}</p>
-                      {isActiveApp ? (
+                      <h3 className="font-heading text-lg font-bold text-fg-primary">{name}</h3>
+                      <p className="mt-1 flex-1 text-sm text-fg-secondary">{description}</p>
+                      {app.status === 'active' ? (
                         <>
-                          {loggedIn && launched.has(svc.code) ? (
+                          {loggedIn && launched.has(app.slug) ? (
                             // 回訪：兩顆按鈕
                             <div className="mt-4 flex gap-2">
                               <a
-                                href={`/api/apps/${svc.code}/launch?to=app`}
+                                href={`/api/apps/${app.slug}/launch?to=app`}
                                 className="inline-flex flex-1 items-center justify-center rounded-xl bg-brand-purple px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
                               >
                                 直接進入 App
                               </a>
                               <a
-                                href={`/api/apps/${svc.code}/launch?to=welcome`}
+                                href={`/api/apps/${app.slug}/launch?to=welcome`}
                                 className="inline-flex flex-1 items-center justify-center rounded-xl border border-brand-purple/40 px-4 py-2.5 text-sm font-medium text-brand-purple transition-colors hover:bg-brand-purple/10"
                               >
                                 看導覽
@@ -215,7 +241,7 @@ export default async function HomePage() {
                           ) : (
                             // 首次（或未登入）：一顆，先看導覽
                             <a
-                              href={`/api/apps/${svc.code}/launch?to=welcome`}
+                              href={`/api/apps/${app.slug}/launch?to=welcome`}
                               className="mt-4 inline-flex items-center justify-center gap-2 rounded-xl bg-brand-purple px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
                             >
                               進去使用 App
@@ -223,6 +249,14 @@ export default async function HomePage() {
                           )}
                           <p className="mt-2 text-center text-xs text-fg-muted">綁卡即享 7 天免費試用，之後自動扣款</p>
                         </>
+                      ) : app.status === 'internal' ? (
+                        // 封測：受邀者由此進兌換動線（launch gate 會導去輸入邀請碼）
+                        <a
+                          href={`/api/apps/${app.slug}/launch`}
+                          className="mt-4 inline-flex items-center justify-center gap-2 rounded-xl border border-brand-purple/40 px-4 py-2.5 text-sm font-medium text-brand-purple transition-colors hover:bg-brand-purple/10"
+                        >
+                          我有邀請碼
+                        </a>
                       ) : (
                         <button
                           disabled
@@ -235,6 +269,35 @@ export default async function HomePage() {
                   </div>
                 )
               })}
+
+              {/* 還沒有 App 的課程：預告位（services 表） */}
+              {teaserServices.map((svc) => (
+                <div
+                  key={svc.code}
+                  className="flex h-full flex-col overflow-hidden rounded-2xl border border-surface-secondary bg-white shadow-sm"
+                >
+                  <div className="relative aspect-[16/9] overflow-hidden bg-surface-secondary">
+                    {svc.banner_url ? (
+                      <Image src={svc.banner_url} alt={svc.name} fill className="object-cover" />
+                    ) : null}
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/40">
+                      <span className="rounded-full bg-white/90 px-4 py-1.5 text-sm font-medium text-fg-primary">
+                        敬請期待
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex flex-1 flex-col p-5">
+                    <h3 className="font-heading text-lg font-bold text-fg-primary">{svc.name}</h3>
+                    <p className="mt-1 flex-1 text-sm text-fg-secondary">{svc.description ?? ''}</p>
+                    <button
+                      disabled
+                      className="mt-4 inline-flex cursor-not-allowed items-center justify-center gap-2 rounded-xl bg-surface-secondary px-4 py-2.5 text-sm font-medium text-fg-muted"
+                    >
+                      敬請期待
+                    </button>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         </section>

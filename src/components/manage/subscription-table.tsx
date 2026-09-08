@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { Download } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { PLAN_LABEL } from '@/lib/plans'
 
 interface Subscription {
   id: string
@@ -21,11 +22,9 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
   cancelled: { label: '已取消', color: 'bg-destructive' },
 }
 
-const PLAN_MAP: Record<string, string> = {
-  basic: '基本版',
-  advanced: '進階版',
-  premium: '旗艦版',
-}
+// plan_name 存的是代碼（free/basic/advanced/premium），顯示時轉短標籤。
+// 舊資料可能存過顯示名（'Premium' 等）—— 對應不到就原樣顯示，不硬翻。
+const PLAN_MAP = PLAN_LABEL
 
 export function SubscriptionTable({ subscriptions }: { subscriptions: Subscription[] }) {
   const [filter, setFilter] = useState<'all' | 'active' | 'expired'>('all')

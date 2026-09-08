@@ -3,7 +3,8 @@ import { createHmac } from 'crypto'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { isAdminRole } from '@/lib/roles'
-import { PLAN_LEVEL, meetsRequiredPlan } from '@/lib/plans'
+import { isPlanCode, meetsRequiredPlan } from '@/lib/plans'
+import { decideLaunch, type LaunchDecision } from '@/lib/launch-gate'
 
 // Market → App SSO 簽發（token handoff）
 // GET /api/apps/:slug/launch
@@ -43,11 +44,14 @@ export async function GET(request: Request, { params }: { params: Promise<{ slug
   const admin = createAdminClient()
   const { data: app } = await admin
     .from('apps')
-    .select('id, slug, name, app_url, admin_url, sso_secret, required_plan, status')
+    .select('id, slug, name, app_url, admin_url, sso_secret, required_plan, status, trial_days')
     .eq('slug', slug)
     .maybeSingle()
 
-  if (!app || app.status !== 'active') {
+  // internal（封測）也放行到 gate —— 但只有持碼建立過試用的人進得去（migration 025）。
+  // draft / archived / 查無此 App / migration 未跑（trial_days 欄位不存在使查詢失敗）
+  // 全部走這裡 fail closed。
+  if (!app || !['active', 'internal'].includes(app.status)) {
     return NextResponse.redirect(new URL('/dashboard/apps?error=app_unavailable', request.url))
   }
   if (!app.app_url || !app.sso_secret) {
@@ -70,6 +74,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ slug
   // 因此改用管理者身分驗證，而不是訂閱方案 —— 後台管理者沒有訂閱是正常的。
   // 任何登入者都能自己組出這個網址，所以這道檢查不可省略。
   const isAdminEntry = to === 'admin'
+  // 試用進場的「門票效期」（epoch 秒）；null = 不設限（方案達標 / admin 入口）
+  let accessUntilSec: number | null = null
   if (isAdminEntry) {
     if (!isAdminRole(u?.role)) {
       return NextResponse.redirect(new URL('/dashboard?error=not_admin', request.url))
@@ -77,21 +83,95 @@ export async function GET(request: Request, { params }: { params: Promise<{ slug
     if (!app.admin_url) {
       return NextResponse.redirect(new URL('/manage/apps?error=admin_url_not_set', request.url))
     }
-  } else if (app.required_plan) {
-    // 這道門檻原本寫成 `plan !== 'trial' && plan !== 'cancelled'`。
-    // 但 'trial' / 'cancelled' 是**私版**的方案值 —— 公版的 current_plan 只有
-    // free / basic / advanced / premium（register/actions.ts 建號即為 'free'）。
-    // 兩個後果：
-    //   1. free 用戶永遠通過 —— 付費 App 對免費用戶等於沒有門檻
-    //   2. required_plan 的值本身從未被比較 —— 設 premium 的 App，basic 用戶照進
-    // 改為用 lib/plans 的等級表實際比較，並在門檻值不合法時 fail closed。
-    if (!(app.required_plan in PLAN_LEVEL)) {
+  } else {
+    // Gate v2（docs/PAYMENT_SPEC.md §3.2、PAYMENT_BOUNDARIES §A 決策表）：
+    // 「方案達標」或「這支 App 的試用還沒到期」擇一即可進入；
+    // internal 封測只認邀請碼建立的試用，已付費會員也不自動開放。
+    //
+    // required_plan 的比較沿用 lib/plans 等級表；門檻值不合法時 fail closed。
+    // 用 isPlanCode 而不是 `in PLAN_LEVEL`：`in` 會連原型鏈一起命中
+    // （'constructor' in PLAN_LEVEL === true），那種值就不會寫進 error log。
+    if (app.required_plan && !isPlanCode(app.required_plan)) {
       console.error(
         `[launch] app "${slug}" 的 required_plan="${app.required_plan}" 不是公版的方案代碼，一律擋下`,
       )
     }
-    if (!meetsRequiredPlan(u?.current_plan, app.required_plan)) {
+    const planMeets = app.required_plan
+      ? meetsRequiredPlan(u?.current_plan, app.required_plan)
+      : true
+
+    // 試用紀錄讀不到（migration 025 未跑 / DB 異常）→ fail closed，不能 500 也不能放行
+    const { data: trialRow, error: trialError } = await admin
+      .from('user_app_trials')
+      .select('expires_at')
+      .eq('user_id', user.id)
+      .eq('app_id', app.id)
+      .maybeSingle()
+    if (trialError) {
+      console.error(`[launch] 讀 user_app_trials 失敗（migration 025 跑了嗎？）:`, trialError.message)
+      return NextResponse.redirect(new URL('/dashboard/apps?error=app_unavailable', request.url))
+    }
+
+    const gateInput = {
+      status: app.status,
+      planMeets,
+      trialDays: typeof app.trial_days === 'number' ? app.trial_days : 0,
+      now: new Date(),
+    }
+    let trialExpiry: Date | null = trialRow ? new Date(trialRow.expires_at) : null
+    let decision: LaunchDecision = decideLaunch({
+      ...gateInput,
+      trial: trialExpiry ? { expiresAt: trialExpiry } : null,
+    })
+
+    if (decision.kind === 'create_trial_and_enter') {
+      // open 試用就地建立（source='open'，invite_code 必為 NULL —— DB CHECK 擋半套）
+      const expiresAt = new Date(Date.now() + gateInput.trialDays * 24 * 60 * 60 * 1000)
+      const { error: insertError } = await admin.from('user_app_trials').insert({
+        user_id: user.id,
+        app_id: app.id,
+        expires_at: expiresAt.toISOString(),
+        source: 'open',
+      })
+      if (insertError?.code === '23505') {
+        // BOUNDARIES §C.1：連點兩下同時建 trial，撞 UNIQUE 的那個 request
+        // 重讀對方剛建好的紀錄再判斷一次（必定未到期 → enter），不回錯誤給使用者。
+        const { data: raced } = await admin
+          .from('user_app_trials')
+          .select('expires_at')
+          .eq('user_id', user.id)
+          .eq('app_id', app.id)
+          .maybeSingle()
+        trialExpiry = raced ? new Date(raced.expires_at) : null
+        decision = decideLaunch({
+          ...gateInput,
+          trial: trialExpiry ? { expiresAt: trialExpiry } : null,
+        })
+      } else if (insertError) {
+        console.error('[launch] 建立 open 試用失敗:', insertError.message)
+        return NextResponse.redirect(new URL('/dashboard/apps?error=app_unavailable', request.url))
+      } else {
+        trialExpiry = expiresAt
+        decision = { kind: 'enter' }
+      }
+    }
+
+    // 憑試用進場（方案沒達標）→ 告訴私版這張門票的效期（Steve 測試回報・發現 04）。
+    // 私版 session cookie 預設 30 天 > 試用 14 天：少了這個上限，試用到期後
+    // 使用者直接打私版網址、cookie 還在，就繞過了 launch gate。
+    // 方案達標者不設限（維持私版原本的 30 天）。
+    if (!planMeets && trialExpiry) {
+      accessUntilSec = Math.floor(trialExpiry.getTime() / 1000)
+    }
+
+    if (decision.kind === 'need_invite') {
+      return NextResponse.redirect(new URL(`/dashboard/apps/invite?app=${slug}`, request.url))
+    }
+    if (decision.kind === 'go_subscribe') {
       return NextResponse.redirect(new URL(`/dashboard/subscribe?app=${slug}`, request.url))
+    }
+    if (decision.kind !== 'enter') {
+      return NextResponse.redirect(new URL('/dashboard/apps?error=app_unavailable', request.url))
     }
   }
 
@@ -109,6 +189,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ slug
       name: u?.nickname ?? '',
       app: app.slug,
       ...(to ? { to } : {}), // 私版 /sso 依此導向 welcome / app
+      // 試用進場時 = 試用到期（私版把自己的 session 效期壓到這個時間，發現 04）
+      ...(accessUntilSec ? { access_until: accessUntilSec } : {}),
       iat: now,
       exp: now + 120, // 短效 2 分鐘
     },

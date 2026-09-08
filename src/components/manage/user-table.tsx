@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { CopyableId } from '@/components/ui/copyable-id'
 import { GENDER_OPTIONS, genderLabel } from '@/lib/user-fields'
+import { PLAN_CODES, PLAN_LABEL } from '@/lib/plans'
 
 interface User {
   id: string
@@ -35,12 +36,7 @@ const ROLE_CONFIG: Record<string, { label: string; color: string; icon: typeof S
   user: { label: '一般用戶', color: 'bg-fg-muted', icon: UserIcon },
 }
 
-const PLAN_LABELS: Record<string, string> = {
-  free: '免費',
-  basic: '基本',
-  advanced: '進階',
-  premium: '旗艦',
-}
+const PLAN_LABELS = PLAN_LABEL
 
 export function UserTable({
   users: initialUsers,
@@ -158,16 +154,26 @@ export function UserTable({
       u.id,
       u.phone,
       u.email ?? '',
-      genderLabel(u.gender),
-      u.birthday ? u.birthday.slice(0, 10) : '-',
+      u.gender != null ? genderLabel(u.gender) : '',
+      u.birthday ? u.birthday.slice(0, 10) : '',
       ROLE_CONFIG[u.role]?.label ?? u.role,
       PLAN_LABELS[u.current_plan] ?? u.current_plan,
       String(u.dialog_limit),
-      u.plan_deadline ? new Date(u.plan_deadline).toLocaleDateString('zh-TW') : '-',
+      u.plan_deadline ? new Date(u.plan_deadline).toLocaleDateString('zh-TW') : '',
       new Date(u.created_at).toLocaleDateString('zh-TW'),
     ])
-    // 值裡出現逗號 / 引號 / 換行時要照 CSV 規則跳脫，否則欄位會錯位
-    const escapeCsv = (v: string) => (/["\n,]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v)
+    // 「沒有值」在表格上顯示 '-'，但那是畫面的慣例 —— CSV 裡就是空白。
+    // 原樣寫進去會被下面的公式防護加上單引號，變成整欄 '-。
+    //
+    // 兩件事：
+    //  1. 逗號 / 引號 / 換行要照 CSV 規則跳脫，否則欄位會錯位
+    //  2. 以 = + - @ 開頭的值，Excel / Numbers 會當成公式執行（CSV injection）。
+    //     用戶名稱是使用者自己填的，`=HYPERLINK(...)` 這種值匯出後打開就會跑。
+    //     前面加一個單引號讓試算表當成純文字。
+    const escapeCsv = (v: string) => {
+      const safe = /^[=+\-@\t\r]/.test(v) ? `'${v}` : v
+      return /["\n,]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe
+    }
     const csv = [headers, ...rows].map((r) => r.map(escapeCsv).join(',')).join('\n')
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
@@ -389,10 +395,9 @@ export function UserTable({
                     onChange={(e) => setEditPlan(e.target.value)}
                     className="h-10 w-full rounded-xl border border-surface-secondary px-3 text-sm"
                   >
-                    <option value="free">免費</option>
-                    <option value="basic">基本</option>
-                    <option value="advanced">進階</option>
-                    <option value="premium">旗艦</option>
+                    {PLAN_CODES.map((c) => (
+                      <option key={c} value={c}>{PLAN_LABEL[c]}</option>
+                    ))}
                   </select>
                 </div>
                 <div className="space-y-2">

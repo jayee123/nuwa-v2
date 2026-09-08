@@ -2,6 +2,7 @@
 
 import { Download } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { PLAN_FULL_NAME } from '@/lib/plans'
 
 interface Payment {
   id: string
@@ -12,6 +13,11 @@ interface Payment {
   paid_at: string | null
   users: { nickname: string | null; phone: string } | null
 }
+
+// plan_name 存的是代碼（premium）。舊資料存的是顯示名（Premium）——
+// `?? v` 讓兩種都顯示得出來，正是 lib/plans 的 PLAN_FULL_NAME 設計用意。
+// 歷史資料是帳務憑證、不改寫，所以這個 fallback 要長期留著。
+const planName = (v: string | null) => PLAN_FULL_NAME[v ?? ''] ?? v ?? '-'
 
 const STATUS_MAP: Record<string, { label: string; color: string }> = {
   paid: { label: '已付款', color: 'bg-brand-teal' },
@@ -26,7 +32,7 @@ export function PaymentTable({ payments }: { payments: Payment[] }) {
     const rows = payments.map((p) => [
       p.users?.nickname ?? '未知',
       p.users?.phone ?? '',
-      p.plan_name ?? '-',
+      planName(p.plan_name),
       `NT$ ${p.amount.toLocaleString()}`,
       STATUS_MAP[p.status]?.label ?? p.status,
       p.payment_uid ?? '-',
@@ -81,7 +87,7 @@ export function PaymentTable({ payments }: { payments: Payment[] }) {
                     <p className="font-medium text-fg-primary">{p.users?.nickname ?? '未知'}</p>
                     <p className="text-xs text-fg-muted">{p.users?.phone}</p>
                   </td>
-                  <td className="px-5 py-4 text-fg-secondary">{p.plan_name ?? '-'}</td>
+                  <td className="px-5 py-4 text-fg-secondary">{planName(p.plan_name)}</td>
                   <td className="px-5 py-4 font-medium text-fg-primary">
                     NT$ {p.amount.toLocaleString()}
                   </td>

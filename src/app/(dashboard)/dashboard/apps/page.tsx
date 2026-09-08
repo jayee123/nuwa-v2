@@ -8,10 +8,12 @@ export const dynamic = 'force-dynamic'
 
 export default async function DashboardAppsPage() {
   const admin = createAdminClient()
+  // internal（封測中）也列出來但標記「即將推出」：一般人看得到、點進去會被
+  // launch gate 導去輸入邀請碼；持碼的受邀者由此進入（PAYMENT_SPEC §3.2）。
   const { data: apps } = await admin
     .from('apps')
-    .select('slug, name, tagline, icon')
-    .eq('status', 'active')
+    .select('slug, name, tagline, icon, status')
+    .in('status', ['active', 'internal'])
     .order('sort_order', { ascending: true })
 
   const list = apps ?? []
@@ -29,14 +31,21 @@ export default async function DashboardAppsPage() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {list.map((app) => (
             <div key={app.slug} className="flex flex-col rounded-2xl border border-surface-secondary bg-white p-6 shadow-sm">
-              <div className="text-3xl">{app.icon || '📦'}</div>
+              <div className="flex items-start justify-between">
+                <div className="text-3xl">{app.icon || '📦'}</div>
+                {app.status === 'internal' && (
+                  <span className="rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-700">
+                    封測中・即將推出
+                  </span>
+                )}
+              </div>
               <h2 className="mt-3 font-heading text-lg font-bold text-fg-primary">{app.name}</h2>
               <p className="mt-1 flex-1 text-sm text-fg-secondary">{app.tagline || ''}</p>
               <Link
                 href={`/api/apps/${app.slug}/launch`}
                 className="mt-4 inline-flex items-center justify-center gap-2 rounded-xl bg-brand-purple px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
               >
-                進入 <ExternalLink className="size-4" />
+                {app.status === 'internal' ? '我有邀請碼' : '進入'} <ExternalLink className="size-4" />
               </Link>
             </div>
           ))}

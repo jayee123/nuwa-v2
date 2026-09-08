@@ -3,6 +3,7 @@
 import { createAdminClient } from '@/lib/supabase/admin'
 import { redirect } from 'next/navigation'
 import { formatPhoneE164 } from '@/lib/phone'
+import { isRegisterInviteRequired } from '@/lib/system-params'
 
 interface RegisterData {
   phone: string
@@ -62,24 +63,30 @@ export async function register(data: RegisterData) {
     return { error: '此手機號碼已註冊，請直接登入' }
   }
 
-  // 邀請碼驗證（試用門檻，#3a 上移公版）— 建帳號前先驗
-  const inviteCode = data.inviteCode?.trim().toUpperCase()
-  if (!inviteCode) {
-    return { error: '請輸入邀請碼' }
-  }
-  const { data: invite } = await supabase
-    .from('invite_codes')
-    .select('code, used_by, expires_at')
-    .eq('code', inviteCode)
-    .maybeSingle()
-  if (!invite) {
-    return { error: '邀請碼不存在' }
-  }
-  if (invite.used_by) {
-    return { error: '邀請碼已被使用' }
-  }
-  if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
-    return { error: '邀請碼已過期' }
+  // 邀請碼門檻改由系統設定控制（封測動線測試回報・發現 01/03）。
+  // 預設不要求：碼的用途是「點 internal App 時兌換」（migration 025 的原子 RPC），
+  // 註冊也收碼會跟兌換頁搶同一組碼 —— 受邀者一組碼在註冊被吃掉，到 App 門口就沒了。
+  // 門檻關閉時就算使用者傳了碼也「完全忽略、不消耗」，把碼留給兌換頁。
+  const requireInvite = await isRegisterInviteRequired()
+  const inviteCode = requireInvite ? data.inviteCode?.trim().toUpperCase() : undefined
+  if (requireInvite) {
+    if (!inviteCode) {
+      return { error: '請輸入邀請碼' }
+    }
+    const { data: invite } = await supabase
+      .from('invite_codes')
+      .select('code, used_by, expires_at')
+      .eq('code', inviteCode)
+      .maybeSingle()
+    if (!invite) {
+      return { error: '邀請碼不存在' }
+    }
+    if (invite.used_by) {
+      return { error: '邀請碼已被使用' }
+    }
+    if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
+      return { error: '邀請碼已過期' }
+    }
   }
 
   // Create Supabase Auth user（帶手機 + email，兩種登入方式皆可用）
@@ -117,11 +124,13 @@ export async function register(data: RegisterData) {
     return { error: `建立帳號失敗：${insertError.message}` }
   }
 
-  // 標記邀請碼已用
-  await supabase
-    .from('invite_codes')
-    .update({ used_by: authData.user.id, used_at: new Date().toISOString() })
-    .eq('code', inviteCode)
+  // 標記邀請碼已用（只有門檻開啟、真的驗過碼時才消耗）
+  if (requireInvite && inviteCode) {
+    await supabase
+      .from('invite_codes')
+      .update({ used_by: authData.user.id, used_at: new Date().toISOString() })
+      .eq('code', inviteCode)
+  }
 
   // Clean up used verification records
   await supabase

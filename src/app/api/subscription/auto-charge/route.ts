@@ -4,6 +4,7 @@ import { executeTokenPayment } from '@/lib/esafe/payment'
 import { decrypt } from '@/lib/esafe/crypto'
 import { getSecretParam } from '@/lib/secret-params'
 import { getPlanByCode } from '@/lib/queries/plans'
+import { PLAN_FULL_NAME } from '@/lib/plans'
 
 // Cron: auto-charge expiring subscriptions
 // Trigger: Vercel Cron daily at 00:00 UTC
@@ -31,16 +32,13 @@ export async function GET(request: Request) {
   let charged = 0
   let failed = 0
 
-  const PLAN_NAME_TO_CODE: Record<string, string> = {
-    '基本方案': 'basic',
-    '進階方案': 'advanced',
-    Premium: 'premium',
-  }
-  const CODE_TO_NAME: Record<string, string> = {
-    basic: '基本方案',
-    advanced: '進階方案',
-    premium: 'Premium',
-  }
+  // PLAN_FULL_NAME 只給 orderInfo（金流閘道收據上人看的品名）用。
+  // ⚠️ 寫進 DB 的 plan_name 一律存「代碼」（free/basic/advanced/premium），
+  //    跟 initiate / callback 同一條規則 —— 這裡曾經把顯示名（'Premium'）寫進
+  //    payments / subscriptions，導致同一欄混存兩種值，後台對不到標籤、
+  //    對帳要靠 callback 的 legacyNameMap 硬翻。歷史資料不改寫（帳務憑證），
+  //    但新資料不准再混。
+  const CODE_TO_NAME = PLAN_FULL_NAME
   const DEFAULT_LIMITS: Record<string, number> = {
     basic: 50,
     advanced: 100,
@@ -122,7 +120,7 @@ export async function GET(request: Request) {
 
       await admin.from('subscriptions').update({
         ends_at: newEndsAt.toISOString(),
-        plan_name: effectivePlanName,
+        plan_name: effectivePlanCode, // 存代碼，同 callback 建訂閱那條路
       }).eq('id', sub.id)
 
       // Update user: apply plan change if scheduled, reset next_plan
@@ -138,7 +136,7 @@ export async function GET(request: Request) {
         user_id: user.id,
         service_id: service?.id,
         amount: chargeAmount,
-        plan_name: effectivePlanName,
+        plan_name: effectivePlanCode, // 存代碼，同 initiate 首次付款那條路
         payment_uid: orderNo,
         status: 'paid',
         paid_at: new Date().toISOString(),

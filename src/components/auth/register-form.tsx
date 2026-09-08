@@ -15,18 +15,25 @@ import { isValidPhone } from '@/lib/phone'
 
 // --- Schemas per step ---
 
-const step1Schema = z.object({
-  phone: z
-    .string()
-    .min(1, '請輸入手機號碼')
-    .refine(isValidPhone, '請輸入有效的手機號碼'),
-  otp: z
-    .string()
-    .min(1, '請輸入驗證碼')
-    .length(4, '驗證碼為 4 碼'),
-  invite_code: z.string().min(1, '請輸入邀請碼'),
-  agree: z.literal(true, { message: '請同意服務條款' }),
-})
+// 邀請碼是否必填由公版系統設定 register_require_invite 決定（伺服端 page.tsx 讀好傳進來）。
+// 預設不要求：碼的用途是「點 internal App 時兌換」，註冊也收碼會跟兌換頁搶同一組碼。
+function makeStep1Schema(requireInvite: boolean) {
+  return z.object({
+    phone: z
+      .string()
+      .min(1, '請輸入手機號碼')
+      .refine(isValidPhone, '請輸入有效的手機號碼'),
+    otp: z
+      .string()
+      .min(1, '請輸入驗證碼')
+      .length(4, '驗證碼為 4 碼'),
+    invite_code: requireInvite
+      ? z.string().min(1, '請輸入邀請碼')
+      : z.string().optional(),
+    agree: z.literal(true, { message: '請同意服務條款' }),
+  })
+}
+type Step1Schema = ReturnType<typeof makeStep1Schema>
 
 const step2Schema = z
   .object({
@@ -48,7 +55,7 @@ const step3Schema = z.object({
     .refine((v) => v.includes('@'), '請輸入有效的 Email'),
 })
 
-type Step1Values = z.infer<typeof step1Schema>
+type Step1Values = z.infer<Step1Schema>
 type Step2Values = z.infer<typeof step2Schema>
 type Step3Values = z.infer<typeof step3Schema>
 
@@ -63,7 +70,7 @@ const STEPS = [
 
 // --- Component ---
 
-export function RegisterForm() {
+export function RegisterForm({ requireInvite = false }: { requireInvite?: boolean }) {
   const searchParams = useSearchParams()
   const [step, setStep] = useState(1)
   const [serverError, setServerError] = useState<string | null>(null)
@@ -84,7 +91,7 @@ export function RegisterForm() {
 
   // --- Step 1 form ---
   const form1 = useForm<Step1Values>({
-    resolver: zodResolver(step1Schema),
+    resolver: zodResolver(makeStep1Schema(requireInvite)),
     defaultValues: { phone: '', otp: '', invite_code: '', agree: false as unknown as true },
   })
 
@@ -303,19 +310,21 @@ export function RegisterForm() {
             )}
           </div>
 
-          {/* 邀請碼 */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-fg-primary">邀請碼</label>
-            <Input
-              {...form1.register('invite_code')}
-              type="text"
-              placeholder="請輸入邀請碼"
-              className="h-11 rounded-xl border-surface-secondary bg-surface-secondary text-sm uppercase placeholder:text-fg-muted placeholder:normal-case focus-visible:border-brand-purple focus-visible:ring-brand-purple/30"
-            />
-            {form1.formState.errors.invite_code && (
-              <p className="text-xs text-destructive">{form1.formState.errors.invite_code.message}</p>
-            )}
-          </div>
+          {/* 邀請碼 —— 只在系統設定要求時顯示；平常註冊不收碼，碼留給進 App 時兌換 */}
+          {requireInvite && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-fg-primary">邀請碼</label>
+              <Input
+                {...form1.register('invite_code')}
+                type="text"
+                placeholder="請輸入邀請碼"
+                className="h-11 rounded-xl border-surface-secondary bg-surface-secondary text-sm uppercase placeholder:text-fg-muted placeholder:normal-case focus-visible:border-brand-purple focus-visible:ring-brand-purple/30"
+              />
+              {form1.formState.errors.invite_code && (
+                <p className="text-xs text-destructive">{form1.formState.errors.invite_code.message}</p>
+              )}
+            </div>
+          )}
 
           {/* Agree */}
           <label className="flex items-start gap-2 text-sm text-fg-secondary">

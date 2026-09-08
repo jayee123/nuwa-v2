@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { randomBytes } from 'crypto'
 import { getAdminCtx, getAccessibleAppIds } from '@/lib/app-access'
 import { logAudit } from '@/lib/audit'
-import { PLAN_CODES, isPlanCode } from '@/lib/plans'
+import { GATEABLE_PLAN_CODES, isGateablePlan } from '@/lib/plans'
 
 // Market App Registry 管理 API
 // GET  /api/manage/apps  → App 清單（依登入者權限過濾；superadmin 看全部）
@@ -62,9 +62,9 @@ export async function POST(request: Request) {
   }
   // 門檻值打錯不會有任何提示，而 launch 端 fail closed，等於整個 App 被安靜鎖住。
   // UI 已改為下拉，這裡再擋一次（API 可被直接呼叫）。
-  if (required_plan && !isPlanCode(required_plan)) {
+  if (required_plan && !isGateablePlan(required_plan)) {
     return NextResponse.json(
-      { error: `進入門檻方案必須是 ${PLAN_CODES.join(' / ')} 其中之一，或留空` },
+      { error: `進入門檻方案必須是 ${GATEABLE_PLAN_CODES.join(' / ')} 其中之一；不限方案請留空` },
       { status: 400 },
     )
   }

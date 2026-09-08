@@ -2,11 +2,14 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { User, KeyRound, CreditCard, Bell, LogOut } from 'lucide-react'
+import { User, KeyRound, CreditCard, Bell, LogOut, LayoutGrid } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
 
 const MENU_ITEMS = [
+  // App 服務放最上面：受邀者拿到邀請碼後的兌換入口就在 /dashboard/apps，
+  // 之前沒有任何連結指向它（封測動線測試回報・發現 02）
+  { href: '/dashboard/apps', label: 'App 服務', icon: LayoutGrid },
   { href: '/dashboard/profile', label: '個人資訊', icon: User },
   { href: '/dashboard/password', label: '密碼重置', icon: KeyRound },
   { href: '/dashboard/subscribe', label: '訂閱管理', icon: CreditCard },

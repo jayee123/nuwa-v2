@@ -3,6 +3,7 @@ import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { PLAN_FULL_NAME } from '@/lib/plans'
 import { Button } from '@/components/ui/button'
 import { StatsCard } from '@/components/dashboard/stats-card'
 import { ProfileForm } from '@/components/dashboard/profile-form'
@@ -27,12 +28,7 @@ export default async function ProfilePage() {
 
   if (!userData) redirect('/login')
 
-  const planLabel: Record<string, string> = {
-    free: '免費方案',
-    basic: '基本方案',
-    advanced: '進階方案',
-    premium: 'Premium',
-  }
+  const planLabel = PLAN_FULL_NAME
 
   // --- Real stats from DB ---
 

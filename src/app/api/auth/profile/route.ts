@@ -13,6 +13,12 @@ import {
 // 可改：用戶名稱（nickname）/ Email / 性別 / 生日
 // 不可改：手機、NUWA ID、角色、方案、點數（後者是後台的事）
 //
+// ⚠️ 這是「整份覆蓋」不是「部分更新」：
+//    nickname 與 email 都必填，缺任一個回 400；gender / birthday 沒帶就寫成 null。
+//    目前唯一的呼叫端是 dashboard/profile-form，它每次都送完整表單，所以沒問題。
+//    若之後有地方只想改單一欄位（例如只更新生日），不要直接呼叫這支 ——
+//    要嘛先讀回現值再整份送出，要嘛把這支改成真正的 partial update。
+//
 // ⚠️ email 自 014 起是 NOT NULL + UNIQUE(lower(email))。
 //    原本這支直接寫 `email: body.email || null`，使用者把 Email 清空按儲存
 //    就會撞 not-null constraint，而錯誤訊息是把原始 Postgres 文字接在

@@ -7,6 +7,7 @@ import { Check, X, Clock } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
+import { PLAN_FULL_NAME } from '@/lib/plans'
 
 interface Plan {
   code: string
@@ -25,11 +26,7 @@ const PLAN_LEVEL: Record<string, number> = {
   premium: 3,
 }
 
-const CODE_TO_NAME: Record<string, string> = {
-  basic: '基本方案',
-  advanced: '進階方案',
-  premium: 'Premium',
-}
+const CODE_TO_NAME = PLAN_FULL_NAME
 
 const PLAN_DETAILS: Record<string, { subtitle: string; description: string; goal: string; allFeatures: { label: string; included: boolean }[] }> = {
   basic: {
@@ -200,7 +197,7 @@ export function SubscribePlans({
         </div>
 
         <p className="mt-3 text-xs text-fg-muted">
-          ● 目前方案：{currentPlan === 'free' ? '免費' : CODE_TO_NAME[currentPlan] ?? currentPlan}（剩餘 {dialogLimit} 次）
+          ● 目前方案：{CODE_TO_NAME[currentPlan] ?? currentPlan}（剩餘 {dialogLimit} 次）
           {deadlineDisplay && ` · 到期日：${deadlineDisplay}`}
         </p>
 

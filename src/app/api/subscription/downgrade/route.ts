@@ -1,13 +1,9 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { PLAN_LEVEL } from '@/lib/plans'
+import { PLAN_LEVEL, PLAN_FULL_NAME } from '@/lib/plans'
 
-const CODE_TO_NAME: Record<string, string> = {
-  basic: '基本方案',
-  advanced: '進階方案',
-  premium: 'Premium',
-}
+const CODE_TO_NAME = PLAN_FULL_NAME
 
 export async function POST(request: Request) {
   const supabase = await createClient()

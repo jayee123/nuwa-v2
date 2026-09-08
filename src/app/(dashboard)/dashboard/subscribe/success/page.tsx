@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { Check } from 'lucide-react'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { PLAN_FULL_NAME } from '@/lib/plans'
 import { Button } from '@/components/ui/button'
 
 export const metadata: Metadata = { title: '付款成功 — 羽升幸福養成學苑' }
@@ -64,7 +65,9 @@ export default async function PaymentSuccessPage({
                 </div>
                 <div className="flex justify-between">
                   <span className="text-fg-muted">訂閱方案</span>
-                  <span className="font-medium text-fg-primary">{payment.plan_name}</span>
+                  <span className="font-medium text-fg-primary">
+                    {PLAN_FULL_NAME[payment.plan_name ?? ''] ?? payment.plan_name}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-fg-muted">金額</span>
