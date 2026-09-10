@@ -41,6 +41,20 @@ export function isTrialActive(trial: { expiresAt: Date } | null, now: Date): boo
   return trial !== null && now.getTime() < trial.expiresAt.getTime()
 }
 
+/**
+ * 這次進場是不是「憑試用」放行的 —— 是的話 SSO token 要帶 access_until（發現 04）。
+ *
+ * internal 一律算：封測不看方案，放行的唯一依據就是試用/邀請碼；
+ * 曾經因為把條件寫成 `!planMeets`，在 required_plan「不限」（planMeets 恆 true）的
+ * App 上，internal 試用進場拿到的是不設限的 30 天 session —— 效期上限形同虛設
+ * （2026-09-10 Jeff 實測抓到）。
+ * active 下才看方案：達標是憑方案（不設限），沒達標才是憑試用。
+ */
+export function isTrialGrantedEntry(status: string, planMeets: boolean): boolean {
+  if (status === 'internal') return true
+  return !planMeets
+}
+
 export function decideLaunch(input: LaunchGateInput): LaunchDecision {
   const { status, planMeets, trialDays, trial, now } = input
 

@@ -4,7 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { isAdminRole } from '@/lib/roles'
 import { isPlanCode, meetsRequiredPlan } from '@/lib/plans'
-import { decideLaunch, type LaunchDecision } from '@/lib/launch-gate'
+import { decideLaunch, isTrialGrantedEntry, type LaunchDecision } from '@/lib/launch-gate'
 
 // Market → App SSO 簽發（token handoff）
 // GET /api/apps/:slug/launch
@@ -156,11 +156,13 @@ export async function GET(request: Request, { params }: { params: Promise<{ slug
       }
     }
 
-    // 憑試用進場（方案沒達標）→ 告訴私版這張門票的效期（Steve 測試回報・發現 04）。
+    // 憑試用進場 → 告訴私版這張門票的效期（Steve 測試回報・發現 04）。
     // 私版 session cookie 預設 30 天 > 試用 14 天：少了這個上限，試用到期後
     // 使用者直接打私版網址、cookie 還在，就繞過了 launch gate。
-    // 方案達標者不設限（維持私版原本的 30 天）。
-    if (!planMeets && trialExpiry) {
+    // 「憑試用」的判斷在 isTrialGrantedEntry：internal 一律是（封測不看方案），
+    // active 才看方案達標與否 —— 別再用 !planMeets 當條件，required_plan
+    // 「不限」的 App 會讓它恆 false（2026-09-10 實測抓到的洞）。
+    if (trialExpiry && isTrialGrantedEntry(app.status, planMeets)) {
       accessUntilSec = Math.floor(trialExpiry.getTime() / 1000)
     }
 

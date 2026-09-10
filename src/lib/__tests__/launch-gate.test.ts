@@ -3,7 +3,7 @@
  * 每個 it 對應表上一列，改任何一列前先改規格書。
  */
 import { describe, expect, it } from 'vitest'
-import { decideLaunch, isTrialActive } from '../launch-gate'
+import { decideLaunch, isTrialActive, isTrialGrantedEntry } from '../launch-gate'
 
 const NOW = new Date('2026-09-07T12:00:00Z')
 const FUTURE = { expiresAt: new Date('2026-09-14T12:00:00Z') }
@@ -61,6 +61,20 @@ describe('其他狀態（fail closed）', () => {
   it('A8: 認不得的 status → unavailable，方案再高也一樣', () => {
     expect(decideLaunch({ ...base, status: 'open', planMeets: true }).kind).toBe('unavailable')
     expect(decideLaunch({ ...base, status: '', planMeets: true }).kind).toBe('unavailable')
+  })
+})
+
+describe('isTrialGrantedEntry — access_until 要不要帶（發現 04）', () => {
+  it('internal 一律憑試用，方案達標與否都要壓效期', () => {
+    // 2026-09-10 實測抓到的洞：required_plan「不限」→ planMeets 恆 true，
+    // 條件寫 !planMeets 會讓 internal 試用進場拿到 30 天不設限 session
+    expect(isTrialGrantedEntry('internal', true)).toBe(true)
+    expect(isTrialGrantedEntry('internal', false)).toBe(true)
+  })
+
+  it('active 看方案：達標憑方案（不壓），沒達標憑試用（壓）', () => {
+    expect(isTrialGrantedEntry('active', true)).toBe(false)
+    expect(isTrialGrantedEntry('active', false)).toBe(true)
   })
 })
 

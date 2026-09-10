@@ -37,7 +37,12 @@ export function InviteRedeemForm({ slug }: { slug: string }) {
     <form onSubmit={submit} className="mt-6 space-y-3">
       <input
         value={code}
-        onChange={(e) => setCode(e.target.value.toUpperCase())}
+        onChange={(e) => {
+          // 輸入一有變動就清掉上一次的錯誤 —— 紅字殘留到下一組碼還沒送出時，
+          // 會讓人以為新碼也無效（Steve 9/7 因此誤判一整輪，9/8 複測回報）
+          setError(null)
+          setCode(e.target.value.toUpperCase())
+        }}
         placeholder="輸入邀請碼"
         autoComplete="off"
         autoCapitalize="characters"
