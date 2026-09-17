@@ -14,6 +14,7 @@ import {
   FileCode2,
   Ticket,
   Timer,
+  Landmark,
   History,
   Cpu,
   Settings,
@@ -51,6 +52,7 @@ const SECTIONS = [
       { href: '/manage/services', label: '方案定價', icon: Tags },
       { href: '/manage/subscriptions', label: '訂閱管理', icon: CalendarCheck },
       { href: '/manage/payments', label: '付款記錄', icon: CreditCard },
+      { href: '/manage/finance', label: '金流帳務', icon: Landmark },
     ],
   },
   {

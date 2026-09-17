@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import { Download } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { PLAN_FULL_NAME } from '@/lib/plans'
@@ -27,6 +28,25 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
 }
 
 export function PaymentTable({ payments }: { payments: Payment[] }) {
+  // 欄位搜尋（Jeff 2026-09-10：後台所有列表都要能過濾）：
+  // 用戶 / 手機 / 方案 / 狀態 / 訂單編號 / 金額，前端過濾（資料已整批在手上）
+  const [search, setSearch] = useState('')
+  const q = search.trim().toLowerCase()
+  const shown = q
+    ? payments.filter((p) =>
+        [
+          p.users?.nickname,
+          p.users?.phone,
+          planName(p.plan_name),
+          STATUS_MAP[p.status]?.label ?? p.status,
+          p.payment_uid,
+          String(p.amount),
+        ]
+          .filter(Boolean)
+          .some((v) => String(v).toLowerCase().includes(q)),
+      )
+    : payments
+
   function handleExport() {
     const headers = ['用戶', '手機', '方案', '金額', '狀態', '訂單編號', '付款時間']
     const rows = payments.map((p) => [
@@ -49,7 +69,14 @@ export function PaymentTable({ payments }: { payments: Payment[] }) {
 
   return (
     <div className="mt-6">
-      <div className="mb-4 flex items-center justify-end">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="搜尋用戶 / 手機 / 方案 / 狀態 / 訂單編號"
+          className="w-72 rounded-lg border border-surface-secondary px-3 py-1.5 text-sm focus:border-brand-purple focus:outline-none"
+        />
         <button
           onClick={handleExport}
           className="flex items-center gap-1.5 rounded-lg border border-surface-secondary px-3 py-1.5 text-xs text-fg-secondary transition-colors hover:bg-surface-secondary/50"
@@ -72,14 +99,14 @@ export function PaymentTable({ payments }: { payments: Payment[] }) {
             </tr>
           </thead>
           <tbody>
-            {payments.length === 0 && (
+            {shown.length === 0 && (
               <tr>
                 <td colSpan={6} className="px-5 py-12 text-center text-fg-muted">
-                  尚無付款記錄
+                  {q ? '沒有符合搜尋的付款記錄' : '尚無付款記錄'}
                 </td>
               </tr>
             )}
-            {payments.map((p) => {
+            {shown.map((p) => {
               const st = STATUS_MAP[p.status] ?? STATUS_MAP.pending
               return (
                 <tr key={p.id} className="border-b border-surface-secondary last:border-0">

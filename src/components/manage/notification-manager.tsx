@@ -45,6 +45,8 @@ export function NotificationManager({
   const [nType, setNType] = useState('system')
   const [nTitle, setNTitle] = useState('')
   const [nContent, setNContent] = useState('')
+  // 欄位搜尋（Jeff 2026-09-10：後台所有列表都要能過濾）
+  const [search, setSearch] = useState('')
 
   async function handleSend() {
     if (!nTitle.trim()) return alert('請輸入通知標題')
@@ -184,6 +186,15 @@ export function NotificationManager({
       )}
 
       {/* Notification list */}
+      <div className="mb-3 flex justify-end">
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="搜尋用戶 / 類型 / 標題 / 內容"
+          className="w-64 rounded-lg border border-surface-secondary px-3 py-1.5 text-sm focus:border-brand-purple focus:outline-none"
+        />
+      </div>
       <div className="overflow-x-auto rounded-xl border border-surface-secondary bg-white">
         <table className="w-full text-sm">
           <thead>
@@ -197,14 +208,25 @@ export function NotificationManager({
             </tr>
           </thead>
           <tbody>
-            {notifications.length === 0 && (
-              <tr>
-                <td colSpan={6} className="px-5 py-12 text-center text-fg-muted">
-                  尚無通知紀錄
-                </td>
-              </tr>
-            )}
-            {notifications.map((n) => {
+            {(() => {
+              const q = search.trim().toLowerCase()
+              const shown = q
+                ? notifications.filter((n) =>
+                    [n.user_name, n.user_phone, TYPE_MAP[n.type]?.label ?? n.type, n.title, n.content]
+                      .filter(Boolean)
+                      .some((v) => String(v).toLowerCase().includes(q)),
+                  )
+                : notifications
+              if (shown.length === 0) {
+                return (
+                  <tr>
+                    <td colSpan={6} className="px-5 py-12 text-center text-fg-muted">
+                      {q ? '沒有符合搜尋的通知' : '尚無通知紀錄'}
+                    </td>
+                  </tr>
+                )
+              }
+              return shown.map((n) => {
               const t = TYPE_MAP[n.type] ?? { label: n.type, color: 'bg-fg-muted' }
               return (
                 <tr key={n.id} className="border-b border-surface-secondary last:border-0">
@@ -229,7 +251,8 @@ export function NotificationManager({
                   </td>
                 </tr>
               )
-            })}
+              })
+            })()}
           </tbody>
         </table>
       </div>

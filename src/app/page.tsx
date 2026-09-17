@@ -8,6 +8,8 @@ import { Footer } from '@/components/layout/footer'
 import { AdminBanner } from '@/components/layout/admin-banner'
 import { Button } from '@/components/ui/button'
 import { getActiveServices } from '@/lib/queries/services'
+import { PLAN_FULL_NAME, meetsRequiredPlan } from '@/lib/plans'
+import { isTrialGrantedEntry } from '@/lib/launch-gate'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 
@@ -60,40 +62,58 @@ const TEACHERS = [
 // status 在渲染端用 switch 而非布林 —— 定案 §03 預留了「只開放給付費會員與受邀者」
 // 這類未來狀態，別把兩態寫死。
 type HomeAppRow = {
+  id: string
   slug: string
   name: string
   tagline: string | null
   icon: string | null
   status: string
+  required_plan: string | null
 }
 
 async function getLaunchableApps(): Promise<HomeAppRow[]> {
   const admin = createAdminClient()
   const { data } = await admin
     .from('apps')
-    .select('slug, name, tagline, icon, status')
+    .select('id, slug, name, tagline, icon, status, required_plan')
     .in('status', ['active', 'internal'])
     .order('sort_order', { ascending: true })
   return (data ?? []) as HomeAppRow[]
 }
 
-// 登入會員「已進過哪些 App」（user_apps 綁定）→ 判斷首次 vs 回訪（每會員一次）
-async function getLaunchedSlugs(): Promise<{ loggedIn: boolean; launched: Set<string> }> {
+// 登入會員的個人化資料：已進過哪些 App（首次 vs 回訪）、方案、各 App 試用到期
+async function getViewerContext(): Promise<{
+  loggedIn: boolean
+  launched: Set<string>
+  currentPlan: string
+  trialByAppId: Map<string, string>
+}> {
+  const empty = { loggedIn: false, launched: new Set<string>(), currentPlan: 'free', trialByAppId: new Map<string, string>() }
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { loggedIn: false, launched: new Set() }
+  if (!user) return empty
   const admin = createAdminClient()
-  const { data: bindings } = await admin.from('user_apps').select('app_id').eq('user_id', user.id)
+  const [{ data: bindings }, { data: u }, { data: trials }] = await Promise.all([
+    admin.from('user_apps').select('app_id').eq('user_id', user.id),
+    admin.from('users').select('current_plan').eq('id', user.id).maybeSingle(),
+    admin.from('user_app_trials').select('app_id, expires_at').eq('user_id', user.id),
+  ])
+  const trialByAppId = new Map<string, string>()
+  for (const t of trials ?? []) trialByAppId.set(t.app_id, t.expires_at)
   const ids = (bindings ?? []).map((b) => b.app_id as string)
-  if (ids.length === 0) return { loggedIn: true, launched: new Set() }
-  const { data: appsRows } = await admin.from('apps').select('slug').in('id', ids)
-  return { loggedIn: true, launched: new Set((appsRows ?? []).map((a) => a.slug as string)) }
+  let launched = new Set<string>()
+  if (ids.length > 0) {
+    const { data: appsRows } = await admin.from('apps').select('slug').in('id', ids)
+    launched = new Set((appsRows ?? []).map((a) => a.slug as string))
+  }
+  return { loggedIn: true, launched, currentPlan: u?.current_plan ?? 'free', trialByAppId }
 }
 
 export default async function HomePage() {
   const services = await getActiveServices()
   const apps = await getLaunchableApps()
-  const { loggedIn, launched } = await getLaunchedSlugs()
+  const { loggedIn, launched, currentPlan, trialByAppId } = await getViewerContext()
+  const now = new Date()
 
   // App 卡（apps 表驅動）＋ 還沒有 App 的課程（services 表，維持「敬請期待」預告位）
   const serviceByCode = new Map(services.map((s) => [s.code, s]))
@@ -198,6 +218,13 @@ export default async function HomePage() {
               {appCards.map(({ app, svc }) => {
                 const name = svc?.name ?? app.name
                 const description = svc?.description ?? app.tagline ?? ''
+                // 進得去的條件講在卡片上（Jeff 2026-09-10）：門檻 badge + 試用倒數
+                const planMeets = app.required_plan ? meetsRequiredPlan(currentPlan, app.required_plan) : true
+                const trialExpiresAt = trialByAppId.get(app.id)
+                const showTrial = loggedIn && Boolean(trialExpiresAt) && isTrialGrantedEntry(app.status, planMeets)
+                const trialLeft = trialExpiresAt
+                  ? Math.ceil((new Date(trialExpiresAt).getTime() - now.getTime()) / (24 * 60 * 60 * 1000))
+                  : 0
                 return (
                   <div
                     key={app.slug}
@@ -218,8 +245,22 @@ export default async function HomePage() {
                       )}
                     </div>
                     <div className="flex flex-1 flex-col p-5">
-                      <h3 className="font-heading text-lg font-bold text-fg-primary">{name}</h3>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-heading text-lg font-bold text-fg-primary">{name}</h3>
+                        {app.status === 'active' && app.required_plan && (
+                          <span className="rounded-full bg-brand-purple/10 px-2 py-0.5 text-xs font-medium text-brand-purple">
+                            需{PLAN_FULL_NAME[app.required_plan] ?? app.required_plan}以上
+                          </span>
+                        )}
+                      </div>
                       <p className="mt-1 flex-1 text-sm text-fg-secondary">{description}</p>
+                      {showTrial && (
+                        <p className={`mt-1 text-xs font-medium ${
+                          trialLeft <= 0 ? 'text-fg-muted' : trialLeft <= 3 ? 'text-amber-600' : 'text-brand-purple'
+                        }`}>
+                          {trialLeft <= 0 ? '免費試用已到期 — 訂閱後可繼續使用' : `免費試用中・剩 ${trialLeft} 天`}
+                        </p>
+                      )}
                       {app.status === 'active' ? (
                         <>
                           {loggedIn && launched.has(app.slug) ? (

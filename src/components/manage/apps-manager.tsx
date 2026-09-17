@@ -71,6 +71,16 @@ export function AppsManager({ initialApps, isSuper }: { initialApps: AppRow[]; i
   const [newAdminRole, setNewAdminRole] = useState('manager')
 
   const apps = initialApps
+  // 欄位搜尋（Jeff 2026-09-10：後台所有列表都要能過濾）
+  const [search, setSearch] = useState('')
+  const q = search.trim().toLowerCase()
+  const shownApps = q
+    ? apps.filter((a) =>
+        [a.name, a.slug, a.tagline, a.db_schema, STATUS_META[a.status]?.label ?? a.status, a.required_plan]
+          .filter(Boolean)
+          .some((v) => String(v).toLowerCase().includes(q)),
+      )
+    : apps
 
   function openCreate() {
     setForm(EMPTY_FORM)
@@ -213,6 +223,13 @@ export function AppsManager({ initialApps, isSuper }: { initialApps: AppRow[]; i
           <h1 className="text-xl font-bold text-gray-800">App 管理</h1>
           <p className="mt-1 text-sm text-gray-500">平台上架的應用（幸福關係等）。新增＝開通一支新 App。</p>
         </div>
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="搜尋名稱 / slug / 狀態"
+          className="input w-56"
+        />
         {isSuper && (
           <button
             onClick={openCreate}
@@ -237,14 +254,14 @@ export function AppsManager({ initialApps, isSuper }: { initialApps: AppRow[]; i
               </tr>
             </thead>
             <tbody>
-              {apps.length === 0 ? (
+              {shownApps.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="px-4 py-10 text-center text-sm text-gray-400">
-                    尚無 App。點右上「新增 App」開通第一支，或先套用 migration 011。
+                    {q ? '沒有符合搜尋的 App' : '尚無 App。點右上「新增 App」開通第一支，或先套用 migration 011。'}
                   </td>
                 </tr>
               ) : (
-                apps.map((app) => {
+                shownApps.map((app) => {
                   const meta = STATUS_META[app.status] ?? STATUS_META.draft
                   return (
                     <tr key={app.id} className="border-b border-gray-100 last:border-0 hover:bg-gray-50">

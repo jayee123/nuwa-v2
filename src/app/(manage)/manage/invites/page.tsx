@@ -31,6 +31,7 @@ export default function ManageInvitesPage() {
   const [justMade, setJustMade] = useState<string[]>([])
   const [apps, setApps] = useState<{ id: string; name: string }[]>([])
   const [appId, setAppId] = useState('') // '' = 不限
+  const [search, setSearch] = useState('')
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -67,10 +68,21 @@ export default function ManageInvitesPage() {
 
   const available = rows.filter((r) => r.status === 'available')
 
+  // 搜尋：碼 / 備註 / 限定 App 名，前端過濾（整批本來就一次載入）
+  const q = search.trim().toUpperCase()
+  const shownRows = q
+    ? rows.filter(
+        (r) =>
+          r.code.includes(q) ||
+          (r.note ?? '').toUpperCase().includes(q) ||
+          (r.app_name ?? '').toUpperCase().includes(q),
+      )
+    : rows
+
   return (
     <div>
       <h1 className="font-heading text-2xl font-bold text-fg-primary">邀請碼</h1>
-      <p className="mt-1 text-sm text-fg-secondary">公版試用門檻。使用者在註冊時輸入，一碼一用。</p>
+      <p className="mt-1 text-sm text-fg-secondary">封測 App 的入場券：使用者點 App 時輸入兌換，一碼一用。</p>
 
       {/* 產生 */}
       <div className="mt-5 rounded-xl border border-surface-secondary bg-white p-4">
@@ -110,11 +122,23 @@ export default function ManageInvitesPage() {
       </div>
 
       {/* 列表 */}
-      <div className="mt-5 flex items-center justify-between">
-        <p className="text-sm text-fg-secondary">共 {rows.length} 組，可用 <b className="text-green-700">{available.length}</b> 組</p>
-        {available.length > 0 && (
-          <button onClick={() => navigator.clipboard?.writeText(available.map((r) => r.code).join('\n'))} className="text-xs text-brand-purple hover:underline">複製全部可用碼</button>
-        )}
+      <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-fg-secondary">
+          共 {rows.length} 組，可用 <b className="text-green-700">{available.length}</b> 組
+          {q && <span className="ml-2 text-fg-muted">（符合搜尋 {shownRows.length} 組）</span>}
+        </p>
+        <div className="flex items-center gap-3">
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="搜尋碼 / 備註 / App"
+            className="input w-56"
+          />
+          {available.length > 0 && (
+            <button onClick={() => navigator.clipboard?.writeText(available.map((r) => r.code).join('\n'))} className="text-xs text-brand-purple hover:underline">複製全部可用碼</button>
+          )}
+        </div>
       </div>
       <div className="mt-2 overflow-hidden rounded-xl border border-surface-secondary bg-white">
         <div className="overflow-x-auto">
@@ -131,10 +155,10 @@ export default function ManageInvitesPage() {
             <tbody>
               {loading ? (
                 <tr><td colSpan={5} className="px-4 py-8 text-center text-fg-muted">讀取中…</td></tr>
-              ) : rows.length === 0 ? (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-fg-muted">尚無邀請碼。用上方「產生」建立一批。</td></tr>
+              ) : shownRows.length === 0 ? (
+                <tr><td colSpan={5} className="px-4 py-8 text-center text-fg-muted">{q ? '沒有符合搜尋的邀請碼' : '尚無邀請碼。用上方「產生」建立一批。'}</td></tr>
               ) : (
-                rows.map((r) => {
+                shownRows.map((r) => {
                   const meta = STATUS_META[r.status]
                   return (
                     <tr key={r.code} className="border-b border-surface-secondary/60 last:border-0">

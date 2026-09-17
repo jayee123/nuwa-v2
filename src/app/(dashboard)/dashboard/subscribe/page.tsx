@@ -4,14 +4,39 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { PLAN_LABEL } from '@/lib/plans'
+import { PLAN_FULL_NAME, PLAN_LABEL } from '@/lib/plans'
 
 export const metadata: Metadata = { title: '訂閱管理 — 羽升幸福養成學苑' }
 
-export default async function SubscribeManagePage() {
+export default async function SubscribeManagePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ app?: string }>
+}) {
   const supabase = await createClient()
   const admin = createAdminClient()
   const { data: { user } } = await supabase.auth.getUser()
+
+  // launch gate 擋人時帶 ?app=<slug> 過來 —— 少了這段說明，被擋的人只會
+  // 「莫名其妙出現在訂閱頁」，不知道要升到哪一級才進得去。
+  const { app: fromAppSlug } = await searchParams
+  let gateNotice: { appName: string; requiredLabel: string } | null = null
+  if (fromAppSlug) {
+    const { data: fromApp } = await admin
+      .from('apps')
+      .select('name, required_plan')
+      .eq('slug', fromAppSlug)
+      .maybeSingle()
+    if (fromApp?.required_plan) {
+      gateNotice = {
+        appName: fromApp.name,
+        requiredLabel: PLAN_FULL_NAME[fromApp.required_plan] ?? fromApp.required_plan,
+      }
+    } else if (fromApp) {
+      // 門檻「不限」卻被導來 = 試用到期（發現 A4 那條路）
+      gateNotice = { appName: fromApp.name, requiredLabel: '' }
+    }
+  }
 
   let currentPlan = 'free'
   let dialogLimit = 0
@@ -44,6 +69,22 @@ export default async function SubscribeManagePage() {
 
   return (
     <div className="space-y-6">
+      {gateNotice && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-800">
+          {gateNotice.requiredLabel ? (
+            <>
+              進入「<span className="font-semibold">{gateNotice.appName}</span>」需要
+              <span className="font-semibold">{gateNotice.requiredLabel}</span>以上；
+              你目前是{PLAN_FULL_NAME[currentPlan] ?? currentPlan}。升級後即可使用。
+            </>
+          ) : (
+            <>
+              你在「<span className="font-semibold">{gateNotice.appName}</span>」的免費試用已到期，
+              訂閱後即可繼續使用。
+            </>
+          )}
+        </div>
+      )}
       <div className="rounded-2xl bg-white p-8 shadow-sm">
         <div className="flex items-center justify-between">
           <h1 className="font-heading text-2xl font-bold text-fg-primary">訂閱管理</h1>

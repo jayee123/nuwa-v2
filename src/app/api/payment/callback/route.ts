@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { chkValueCallbackRaw } from '@/lib/esafe/chkvalue'
 import { getPlanByCode } from '@/lib/queries/plans'
+import { recordGatewayTx } from '@/lib/esafe/ledger'
 
 export async function POST(request: Request) {
   const formData = await request.formData()
@@ -42,9 +43,24 @@ export async function POST(request: Request) {
 
   // Check error code (00 = 綁卡成功, 00000 = 扣款成功)
   const errMsg = formData.get('errmsg') as string ?? ''
+  // 金流帳務（migration 027）：與紅陽的往來成功失敗都留原始憑據。
+  // raw 只收非敏感欄位 —— tokenData / ChkValue 一律不進帳（PCI 紀律）。
+  const ledgerRaw = { Td: td, MN: mnRaw, errcode: errCode, errmsg: errMsg, buysafeno, note2 }
   if (errCode !== '00' && errCode !== '00000') {
     console.error('[payment/callback] 付款失敗:', { errCode, errMsg, td, mnRaw })
     await admin.from('payments').update({ status: 'failed' }).eq('id', payment.id)
+    await recordGatewayTx(admin, {
+      userId: note1 || payment.user_id,
+      paymentId: payment.id,
+      txType: 'bind_first_charge',
+      amount: mn,
+      orderNo: td,
+      gatewayNo: buysafeno || null,
+      errcode: errCode,
+      errmsg: decodeURIComponent(errMsg || ''),
+      success: false,
+      raw: ledgerRaw,
+    })
     return new Response(`Payment Failed: ${errCode} - ${decodeURIComponent(errMsg || '未知錯誤')}`)
   }
 
@@ -57,6 +73,19 @@ export async function POST(request: Request) {
     token_data: tokenData ?? null,
     paid_at: new Date().toISOString(),
   }).eq('id', payment.id)
+
+  // 金流帳務：成功收款入帳（雙回調由 idx_gateway_tx_dedupe 擋重複）
+  await recordGatewayTx(admin, {
+    userId,
+    paymentId: payment.id,
+    txType: 'bind_first_charge',
+    amount: mn,
+    orderNo: td,
+    gatewayNo: buysafeno || null,
+    errcode: errCode,
+    success: true,
+    raw: ledgerRaw,
+  })
 
   // Get service for subscription
   const { data: service } = await admin

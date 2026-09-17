@@ -5,6 +5,7 @@ import { decrypt } from '@/lib/esafe/crypto'
 import { getSecretParam } from '@/lib/secret-params'
 import { getPlanByCode } from '@/lib/queries/plans'
 import { PLAN_FULL_NAME } from '@/lib/plans'
+import { recordGatewayTx } from '@/lib/esafe/ledger'
 
 // Cron: auto-charge expiring subscriptions
 // Trigger: Vercel Cron daily at 00:00 UTC
@@ -104,7 +105,7 @@ export async function GET(request: Request) {
       const orderNo = `REC_${Date.now()}_${Math.floor(Math.random() * 1000)}`
 
       // Execute payment with the effective plan's price
-      await executeTokenPayment({
+      const gatewayResult = await executeTokenPayment({
         paymentToken: tokenInfo.paymentToken,
         verificationCode: tokenInfo.verificationCode ?? '',
         tokenExpiryDate: tokenInfo.tokenExpiryDate ?? '',
@@ -113,6 +114,14 @@ export async function GET(request: Request) {
         orderNo,
         orderInfo: `自動扣款 — ${effectivePlanName}${hasScheduledChange ? '（方案變更）' : ''}`,
       })
+      // ⚠️ 既有行為：只要 executeTokenPayment 沒 throw 就當成功，回傳的 errcode
+      //    並未檢查（紅陽回失敗碼但 HTTP 200 時，訂閱仍會被展延）。
+      //    這是金流主線的判斷，A 案不動它 —— 只把 errcode 如實記進帳，
+      //    帳上看得到「成功處理但 errcode 非 00」的異常列。修正列入 Steve 金流規格書。
+      const gatewayErrcode =
+        typeof (gatewayResult as { errcode?: unknown })?.errcode === 'string'
+          ? ((gatewayResult as { errcode?: string }).errcode ?? null)
+          : null
 
       // Extend subscription by 1 month
       const newEndsAt = new Date(sub.ends_at)
@@ -132,7 +141,7 @@ export async function GET(request: Request) {
       }).eq('id', user.id)
 
       // Record payment
-      await admin.from('payments').insert({
+      const { data: paymentRow } = await admin.from('payments').insert({
         user_id: user.id,
         service_id: service?.id,
         amount: chargeAmount,
@@ -140,12 +149,34 @@ export async function GET(request: Request) {
         payment_uid: orderNo,
         status: 'paid',
         paid_at: new Date().toISOString(),
+      }).select('id').single()
+
+      // 金流帳務（migration 027）：月扣入帳。raw 由 ledger 端剔除敏感欄位。
+      await recordGatewayTx(admin, {
+        userId: user.id,
+        paymentId: paymentRow?.id ?? null,
+        txType: 'recurring',
+        amount: chargeAmount,
+        orderNo,
+        errcode: gatewayErrcode,
+        success: true,
+        raw: (gatewayResult ?? null) as Record<string, unknown> | null,
       })
 
       charged++
     } catch (e) {
       console.error('Auto-charge failed for user', user.id, e)
       failed++
+
+      // 金流帳務：扣款失敗也留帳（以後查「為什麼這個人扣款失敗」不用翻 log）
+      await recordGatewayTx(admin, {
+        userId: user.id,
+        txType: 'recurring',
+        amount: chargeAmount,
+        errcode: null,
+        errmsg: e instanceof Error ? e.message.slice(0, 500) : String(e).slice(0, 500),
+        success: false,
+      })
 
       // Mark as failed after 3 retries (check recent failures)
       const { count } = await admin
