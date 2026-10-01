@@ -12,7 +12,10 @@ export const metadata: Metadata = {
 }
 
 const MILESTONES = [
-  { year: '2023', event: '羽升幸福養成學院成立，推出 MBTI 幸福關係課程' },
+  // MBTI 是 The Myers-Briggs Company 的註冊商標：描述方法可以提（本頁其他段落
+  // 的「透過 MBTI 人格分析…」都保留），但接在產品名前面就是當品牌名用，
+  // 那是商標最忌諱的用法（Jeff 2026-09-24 拍板）。
+  { year: '2023', event: '羽升幸福養成學院成立，推出幸福關係課程' },
   { year: '2024', event: '導入 AI ChatBot 家教系統，累積 500+ 位學員' },
   { year: '2025', event: '推出鑽石溝通術、奇門排盤課程，服務範圍擴大至海外' },
   { year: '2026', event: 'V2 平台升級，全面 AI 化學習體驗' },

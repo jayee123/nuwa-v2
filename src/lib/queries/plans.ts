@@ -13,9 +13,14 @@ export interface PlanRow {
   is_active: boolean
 }
 
+/**
+ * 可購買的方案（訂閱頁用）。
+ * 排除 free：它在 plans 表裡只是為了讓免費會員的對話次數能在後台編輯
+ * （migration 030、Steve §4.7），不是能買的東西。
+ */
 export async function getActivePlans(): Promise<PlanRow[]> {
   const admin = createAdminClient()
-  const { data } = await admin.from('plans').select('*').eq('is_active', true).order('sort_order')
+  const { data } = await admin.from('plans').select('*').eq('is_active', true).neq('code', 'free').order('sort_order')
   return (data ?? []) as PlanRow[]
 }
 

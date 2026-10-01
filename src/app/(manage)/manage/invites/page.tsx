@@ -32,6 +32,9 @@ export default function ManageInvitesPage() {
   const [apps, setApps] = useState<{ id: string; name: string }[]>([])
   const [appId, setAppId] = useState('') // '' = 不限
   const [search, setSearch] = useState('')
+  // 停用的兩段式確認：第一次點只標記，再點一次才送出（不用 window.confirm）
+  const [confirmCode, setConfirmCode] = useState<string | null>(null)
+  const [disablingCode, setDisablingCode] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -63,6 +66,32 @@ export default function ManageInvitesPage() {
       await load()
     } finally {
       setBusy(false)
+    }
+  }
+
+  // 停用＝把到期日設成現在（A 案）。單向不可復原，需要就重發一張。
+  async function disable(code: string) {
+    setDisablingCode(code)
+    setError(null)
+    try {
+      const res = await fetch(`/api/manage/invites/${encodeURIComponent(code)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'disable' }),
+      })
+      const json = await res.json()
+      if (!res.ok) { setError(json.error || '停用失敗'); return }
+      // 不可變更新：換掉那一列，不動原陣列
+      setRows((prev) =>
+        prev.map((r) =>
+          r.code === code ? { ...r, status: 'expired' as const, expires_at: json.data.expires_at } : r,
+        ),
+      )
+      setConfirmCode(null)
+    } catch {
+      setError('網路錯誤，請重試')
+    } finally {
+      setDisablingCode(null)
     }
   }
 
@@ -150,13 +179,14 @@ export default function ManageInvitesPage() {
                 <th className="px-4 py-3 font-medium">限定 App</th>
                 <th className="px-4 py-3 font-medium">備註</th>
                 <th className="px-4 py-3 font-medium">到期</th>
+                <th className="px-4 py-3 text-right font-medium">操作</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-fg-muted">讀取中…</td></tr>
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-fg-muted">讀取中…</td></tr>
               ) : shownRows.length === 0 ? (
-                <tr><td colSpan={5} className="px-4 py-8 text-center text-fg-muted">{q ? '沒有符合搜尋的邀請碼' : '尚無邀請碼。用上方「產生」建立一批。'}</td></tr>
+                <tr><td colSpan={6} className="px-4 py-8 text-center text-fg-muted">{q ? '沒有符合搜尋的邀請碼' : '尚無邀請碼。用上方「產生」建立一批。'}</td></tr>
               ) : (
                 shownRows.map((r) => {
                   const meta = STATUS_META[r.status]
@@ -167,6 +197,35 @@ export default function ManageInvitesPage() {
                       <td className="px-4 py-3 text-xs text-fg-secondary">{r.app_name ?? '不限'}</td>
                       <td className="px-4 py-3 text-xs text-fg-muted">{r.note ?? '-'}</td>
                       <td className="px-4 py-3 text-xs text-fg-muted">{r.expires_at ? new Date(r.expires_at).toLocaleDateString() : '不過期'}</td>
+                      <td className="px-4 py-3 text-right whitespace-nowrap">
+                        {r.status !== 'available' ? (
+                          <span className="text-xs text-fg-muted">—</span>
+                        ) : confirmCode === r.code ? (
+                          <>
+                            <button
+                              onClick={() => disable(r.code)}
+                              disabled={disablingCode === r.code}
+                              className="rounded-lg bg-red-600 px-2.5 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                            >
+                              {disablingCode === r.code ? '停用中…' : '確定停用'}
+                            </button>
+                            <button
+                              onClick={() => setConfirmCode(null)}
+                              disabled={disablingCode === r.code}
+                              className="ml-2 text-xs text-fg-muted hover:underline disabled:opacity-50"
+                            >
+                              取消
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            onClick={() => { setConfirmCode(r.code); setError(null) }}
+                            className="text-xs text-brand-purple hover:underline"
+                          >
+                            停用
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   )
                 })

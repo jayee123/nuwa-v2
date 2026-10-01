@@ -9,7 +9,7 @@ import { AdminBanner } from '@/components/layout/admin-banner'
 import { Button } from '@/components/ui/button'
 import { getActiveServices } from '@/lib/queries/services'
 import { PLAN_FULL_NAME, meetsRequiredPlan } from '@/lib/plans'
-import { isTrialGrantedEntry } from '@/lib/launch-gate'
+import { decideLaunch, isTrialGrantedEntry } from '@/lib/launch-gate'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 
@@ -69,13 +69,15 @@ type HomeAppRow = {
   icon: string | null
   status: string
   required_plan: string | null
+  /** apps.trial_days（0 = 此 App 關閉試用）；按鈕文案要用它，別寫死天數 */
+  trial_days: number | null
 }
 
 async function getLaunchableApps(): Promise<HomeAppRow[]> {
   const admin = createAdminClient()
   const { data } = await admin
     .from('apps')
-    .select('id, slug, name, tagline, icon, status, required_plan')
+    .select('id, slug, name, tagline, icon, status, required_plan, trial_days')
     .in('status', ['active', 'internal'])
     .order('sort_order', { ascending: true })
   return (data ?? []) as HomeAppRow[]
@@ -143,12 +145,9 @@ export default async function HomePage() {
                 讓每個人都能理解愛、說出愛、活出愛。
               </p>
 
+              {/* 2026-09-26 決定：公版不再自己提供 AI，「免費體驗 AI 家教」入口移除。
+                  Hero 文案等 Steve 給新的（decision-remove-legacy-ai.md）。 */}
               <div className="mt-8 flex flex-wrap gap-3">
-                <Link href="/guest/happy">
-                  <Button className="h-12 rounded-xl bg-brand-purple px-8 text-base font-medium text-white hover:bg-brand-purple/90">
-                    免費體驗 AI 家教
-                  </Button>
-                </Link>
                 <Link href="#courses">
                   <Button variant="outline" className="h-12 rounded-xl px-8 text-base font-medium">
                     看課程內容
@@ -225,6 +224,16 @@ export default async function HomePage() {
                 const trialLeft = trialExpiresAt
                   ? Math.ceil((new Date(trialExpiresAt).getTime() - now.getTime()) / (24 * 60 * 60 * 1000))
                   : 0
+                const trialDays = Number(app.trial_days ?? 0)
+                // 按鈕文案與 launch gate 同源，別讓卡片講一套、實際做另一套
+                const decision = decideLaunch({
+                  status: app.status,
+                  planMeets,
+                  trialDays,
+                  trial: trialExpiresAt ? { expiresAt: new Date(trialExpiresAt) } : null,
+                  now,
+                })
+                const willBurnTrial = decision.kind === 'create_trial_and_enter'
                 return (
                   <div
                     key={app.slug}
@@ -285,10 +294,17 @@ export default async function HomePage() {
                               href={`/api/apps/${app.slug}/launch?to=welcome`}
                               className="mt-4 inline-flex items-center justify-center gap-2 rounded-xl bg-brand-purple px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
                             >
-                              進去使用 App
+                              {willBurnTrial ? `開始 ${trialDays} 天免費試用` : '進去使用 App'}
                             </a>
                           )}
-                          <p className="mt-2 text-center text-xs text-fg-muted">綁卡即享 7 天免費試用，之後自動扣款</p>
+                          {/* 原本寫「綁卡即享 7 天免費試用，之後自動扣款」—— 兩處都與事實相反：
+                              天數寫死 7（實際讀 apps.trial_days），而定案的試用是**免綁卡、不自動扣款**
+                              （Steve〈金流與試用架構定案〉）。承諾了系統不會做的事，是會退費的那種誤導。 */}
+                          {willBurnTrial && (
+                            <p className="mt-2 text-center text-xs text-fg-muted">
+                              免費試用 {trialDays} 天・不需綁卡、不會自動扣款
+                            </p>
+                          )}
                         </>
                       ) : app.status === 'internal' ? (
                         // 封測：受邀者由此進兌換動線（launch gate 會導去輸入邀請碼）

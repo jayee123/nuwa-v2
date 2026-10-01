@@ -35,6 +35,29 @@ export function formatPhoneE164(phone: string, countryCode: string): string {
 }
 
 /**
+ * 正規化成「本地儲存格式」—— users.phone 與 sms_verifications.phone 的唯一標準。
+ * 台灣（+886）一律是 09 開頭的 10 碼：
+ *   "905376287"      → "0905376287"   （沒打開頭 0 —— 2026-09-21 Steve 踩到的坑）
+ *   "0905376287"     → "0905376287"
+ *   "+886905376287"  → "0905376287"
+ *   "886905376287"   → "0905376287"
+ *   "09 0537-6287"   → "0905376287"
+ * 其他國碼只清符號、不動格式（國際號碼支援是另一題，待議）。
+ *
+ * ⚠️ 所有「拿手機號查表／寫表」的伺服器端入口（sms/send、sms/verify、
+ * 註冊、重設密碼）都必須先過這一層 —— 表單端有沒有補零都不能影響結果。
+ */
+export function normalizeLocalPhone(phone: string, countryCode: string = '+886'): string {
+  const cleaned = phone.replace(/[\s\-()]/g, '')
+  if (countryCode !== '+886') return cleaned
+  if (cleaned.startsWith('+886')) return '0' + cleaned.slice(4)
+  // 886 開頭且長度符合「886 + 9 碼」才視為帶國碼（避免誤傷 0886… 這類想像中的市話）
+  if (cleaned.startsWith('886') && cleaned.length === 12) return '0' + cleaned.slice(3)
+  if (!cleaned.startsWith('0')) return '0' + cleaned
+  return cleaned
+}
+
+/**
  * Validate phone number (loose — just check it has enough digits after cleanup)
  */
 export function isValidPhone(phone: string): boolean {

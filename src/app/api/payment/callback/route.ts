@@ -18,9 +18,16 @@ export async function POST(request: Request) {
   const note1 = formData.get('note1') as string // userId
   const note2 = formData.get('note2') as string // serviceCode
 
-  // Verify ChkValue
+  // Verify ChkValue —— 必填。
+  // 這是 server-to-server 端點，沒有 session 保護，驗簽是唯一防線。
+  // 以前是「有帶才驗」：用戶自己 initiate 拿到 Td 後，POST 一個不帶 ChkValue 的
+  // 回呼就能把自己的 pending 標成 paid、白拿一個月訂閱。
+  if (!td || !mnRaw || !chkValue) {
+    console.error('[payment/callback] 缺少必要欄位', { hasTd: !!td, hasMN: !!mnRaw, hasChkValue: !!chkValue })
+    return new Response('ChkValue Error', { status: 400 })
+  }
   const localChk = await chkValueCallbackRaw(mnRaw, td)
-  if (chkValue && localChk !== chkValue) {
+  if (localChk !== chkValue) {
     console.error('[payment/callback] ChkValue mismatch', { local: localChk, remote: chkValue, mnRaw, td })
     return new Response('ChkValue Error', { status: 400 })
   }

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { normalizeLocalPhone } from '@/lib/phone'
 
 export async function POST(request: Request) {
   const { phone, code } = await request.json()
@@ -10,11 +11,15 @@ export async function POST(request: Request) {
 
   const supabase = createAdminClient()
 
+  // 有沒有補零都要對得上（Jeff 2026-09-21）：查正規化後的格式為主，
+  // 原始輸入為輔 —— 兜住「發碼時還是舊版程式存了未補零字串」的過渡期記錄。
+  const candidates = [...new Set([normalizeLocalPhone(phone), String(phone)])]
+
   // Find the latest unverified code for this phone
   const { data: record } = await supabase
     .from('sms_verifications')
     .select('*')
-    .eq('phone', phone)
+    .in('phone', candidates)
     .eq('verified', false)
     .order('created_at', { ascending: false })
     .limit(1)

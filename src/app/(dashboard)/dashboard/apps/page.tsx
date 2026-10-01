@@ -4,7 +4,7 @@ import { ExternalLink } from 'lucide-react'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 import { PLAN_FULL_NAME, meetsRequiredPlan } from '@/lib/plans'
-import { isTrialGrantedEntry } from '@/lib/launch-gate'
+import { decideLaunch, isTrialGrantedEntry } from '@/lib/launch-gate'
 
 export const metadata: Metadata = { title: 'App 服務 — 羽升幸福養成學苑' }
 export const dynamic = 'force-dynamic'
@@ -16,13 +16,36 @@ function trialDaysLeft(expiresAt: string, now: Date): number {
   return Math.ceil((new Date(expiresAt).getTime() - now.getTime()) / (24 * 60 * 60 * 1000))
 }
 
+// 按鈕文案跟著 launch gate 的判斷走，不要自己另算一套（Steve 2026-09-23 發現 02）。
+//
+// 原本寫死「進入」，但在「門檻 ≥ 基本、使用者未達標、還沒試用過」的 App 上，
+// 點下去的那一瞬間就**永久用掉**他對這支 App 唯一一次的試用機會
+// （UNIQUE(user_id, app_id)），畫面上卻一個字都沒提。真實使用者很可能
+// 只是想點進去看一眼長什麼樣。
+//
+// 反過來也不能無條件改成「開始試用」：門檻「不限」的 App（planMeets 恆 true）
+// 免費會員是直接進場、根本不開試用，寫「開始 N 天免費試用」就是假訊息。
+// 所以交給 decideLaunch —— 只有它回 create_trial_and_enter 才是真的會燒掉試用。
+function launchLabel(decision: { kind: string }, trialDays: number): string {
+  switch (decision.kind) {
+    case 'create_trial_and_enter':
+      return `開始 ${trialDays} 天免費試用`
+    case 'need_invite':
+      return '我有邀請碼'
+    case 'go_subscribe':
+      return '前往訂閱'
+    default:
+      return '進入' // enter / unavailable（unavailable 不會被列出來）
+  }
+}
+
 export default async function DashboardAppsPage() {
   const admin = createAdminClient()
   // internal（封測中）也列出來但標記「即將推出」：一般人看得到、點進去會被
   // launch gate 導去輸入邀請碼；持碼的受邀者由此進入（PAYMENT_SPEC §3.2）。
   const { data: apps } = await admin
     .from('apps')
-    .select('id, slug, name, tagline, icon, status, required_plan')
+    .select('id, slug, name, tagline, icon, status, required_plan, trial_days')
     .in('status', ['active', 'internal'])
     .order('sort_order', { ascending: true })
 
@@ -60,6 +83,14 @@ export default async function DashboardAppsPage() {
             // 只有「憑試用進場」的人需要看到試用倒數；方案達標者與試用無關
             const showTrial = Boolean(trialExpiresAt) && isTrialGrantedEntry(app.status, planMeets)
             const left = trialExpiresAt ? trialDaysLeft(trialExpiresAt, now) : 0
+            const trialDays = Number(app.trial_days ?? 0)
+            const decision = decideLaunch({
+              status: app.status,
+              planMeets,
+              trialDays,
+              trial: trialExpiresAt ? { expiresAt: new Date(trialExpiresAt) } : null,
+              now,
+            })
             return (
               <div key={app.slug} className="flex flex-col rounded-2xl border border-surface-secondary bg-white p-6 shadow-sm">
                 <div className="flex items-start justify-between">
@@ -89,9 +120,7 @@ export default async function DashboardAppsPage() {
                   href={`/api/apps/${app.slug}/launch`}
                   className="mt-4 inline-flex items-center justify-center gap-2 rounded-xl bg-brand-purple px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
                 >
-                  {app.status === 'internal'
-                    ? (showTrial && left > 0 ? '進入' : '我有邀請碼')
-                    : (showTrial && left <= 0 ? '前往訂閱' : '進入')} <ExternalLink className="size-4" />
+                  {launchLabel(decision, trialDays)} <ExternalLink className="size-4" />
                 </Link>
               </div>
             )

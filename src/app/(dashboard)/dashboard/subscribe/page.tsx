@@ -5,6 +5,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { PLAN_FULL_NAME, PLAN_LABEL } from '@/lib/plans'
+import { getDialogQuota, dialogQuotaLabel } from '@/lib/queries/dialog-quota'
 
 export const metadata: Metadata = { title: '訂閱管理 — 羽升幸福養成學苑' }
 
@@ -39,16 +40,16 @@ export default async function SubscribeManagePage({
   }
 
   let currentPlan = 'free'
-  let dialogLimit = 0
+  let quotaLabel = ''
 
   if (user) {
-    const { data: userData } = await admin
-      .from('users')
-      .select('current_plan, dialog_limit')
-      .eq('id', user.id)
-      .single()
+    const [{ data: userData }, quota] = await Promise.all([
+      admin.from('users').select('current_plan').eq('id', user.id).single(),
+      // 本期 AI 對話（各 App 共用一池）；舊的 users.dialog_limit 不再顯示
+      getDialogQuota(admin, user.id),
+    ])
     currentPlan = userData?.current_plan ?? 'free'
-    dialogLimit = userData?.dialog_limit ?? 0
+    quotaLabel = dialogQuotaLabel(quota)
   }
 
   // 只需要知道「有沒有有效訂閱」與「最晚到期日」。
@@ -109,8 +110,8 @@ export default async function SubscribeManagePage({
                   <dd className="text-fg-primary">{PLAN_LABEL[currentPlan] ?? currentPlan}</dd>
                 </div>
                 <div>
-                  <dt className="text-xs text-fg-muted">AI 對話點數</dt>
-                  <dd className="tabular-nums text-fg-primary">可用 {dialogLimit} 次</dd>
+                  <dt className="text-xs text-fg-muted">AI 對話（各 App 共用）</dt>
+                  <dd className="tabular-nums text-fg-primary">{quotaLabel}</dd>
                 </div>
               </dl>
             </div>

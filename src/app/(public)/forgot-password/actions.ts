@@ -1,6 +1,7 @@
 'use server'
 
 import { createAdminClient } from '@/lib/supabase/admin'
+import { normalizeLocalPhone } from '@/lib/phone'
 
 export async function resetPasswordWithOtp(formData: {
   phone: string
@@ -8,19 +9,16 @@ export async function resetPasswordWithOtp(formData: {
 }) {
   const supabase = createAdminClient()
 
-  // Format phone to E.164
-  let phone = formData.phone.replace(/\s|-/g, '')
-  if (phone.startsWith('0')) {
-    phone = '+886' + phone.slice(1)
-  } else if (!phone.startsWith('+')) {
-    phone = '+886' + phone
-  }
+  // 伺服器端統一正規化（Jeff 2026-09-21）：有沒有補零都收斂成儲存格式，
+  // 跟 sms_verifications / users.phone 對得上。原本這裡算了一個 E.164
+  // 卻沒用到（查表都用原始輸入），一併清掉。
+  const phone = normalizeLocalPhone(formData.phone)
 
   // Verify that phone was OTP-verified
   const { data: verified } = await supabase
     .from('sms_verifications')
     .select('id')
-    .eq('phone', formData.phone)
+    .eq('phone', phone)
     .eq('verified', true)
     .order('created_at', { ascending: false })
     .limit(1)
@@ -31,11 +29,19 @@ export async function resetPasswordWithOtp(formData: {
   }
 
   // Check that user exists
+  // users.phone 有 V1 遷移殘留的舊格式（886…、+886…），比照 login/actions.ts
+  // 多格式並查 —— 2026-09-21 Jeff 實測：簡訊通了卻在這關「尚未註冊」。
+  const phoneCandidates = [...new Set([
+    phone, // 0936923912（標準）
+    phone.startsWith('0') ? '886' + phone.slice(1) : phone, // 886936923912（V1 殘留）
+    phone.startsWith('0') ? '+886' + phone.slice(1) : phone, // +886936923912
+  ])]
   const { data: user } = await supabase
     .from('users')
     .select('id, deleted_at')
-    .eq('phone', formData.phone)
-    .single()
+    .in('phone', phoneCandidates)
+    .limit(1)
+    .maybeSingle()
 
   if (!user) {
     return { error: '此手機號碼尚未註冊' }
@@ -59,7 +65,7 @@ export async function resetPasswordWithOtp(formData: {
   await supabase
     .from('sms_verifications')
     .delete()
-    .eq('phone', formData.phone)
+    .eq('phone', phone)
 
   return { success: true }
 }

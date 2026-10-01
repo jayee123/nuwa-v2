@@ -9,7 +9,8 @@ import { createAdminClient } from '@/lib/supabase/admin'
 // 「標記碼已用」與「建 trial」的原子性在 DB 端 redeem_invite_for_app 內完成
 // （migration 025，PAYMENT_BOUNDARIES §C.2）—— 這裡只做輸入驗證與錯誤翻譯。
 //
-// 錯誤訊息刻意不區分「碼不存在」與「碼已被用」（防列舉，§D）。
+// 錯誤訊息刻意不區分「碼不存在」與「碼已被用」（防列舉，§D）；
+// 「已過期」是唯一的例外（migration 028），理由見該檔案的註解。
 
 export async function POST(request: Request, { params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params
@@ -58,6 +59,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ slu
 
   if (error) {
     const msg = error.message ?? ''
+    // 過期要先於 INVITE_INVALID 判斷（migration 028）：兩者都是 400，但使用者
+    // 看到「已過期」才知道該去要新碼，而不是以為自己打錯字。
+    if (msg.includes('INVITE_EXPIRED')) {
+      return NextResponse.json({ error: '此邀請碼已過期，請向發送者索取新的邀請碼' }, { status: 400 })
+    }
     if (msg.includes('INVITE_INVALID')) {
       return NextResponse.json({ error: '邀請碼無效或已被使用' }, { status: 400 })
     }

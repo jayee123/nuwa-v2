@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { BookOpen, User, CreditCard, Puzzle, LayoutGrid } from 'lucide-react'
+import { BookOpen, User, CreditCard, LayoutGrid } from 'lucide-react'
 
 export const metadata: Metadata = {
   title: '會員中心 — 羽升幸福養成學苑',
@@ -8,7 +8,6 @@ export const metadata: Metadata = {
 
 const QUICK_LINKS = [
   { href: '/dashboard/apps', label: 'App 服務', desc: '進入各個應用（登入自動帶過去）', icon: LayoutGrid, color: 'bg-brand-purple/10 text-brand-purple' },
-  { href: '/dashboard/practice/unpack', label: '我卡住，幫我拆', desc: '說出卡點，小羽幫你拆解', icon: Puzzle, color: 'bg-brand-purple/10 text-brand-purple' },
   { href: '/dashboard/profile', label: '個人資料', desc: '管理你的帳號資訊', icon: User, color: 'bg-surface-secondary text-fg-secondary' },
   { href: '/dashboard/password', label: '密碼變更', desc: '更新你的登入密碼', icon: CreditCard, color: 'bg-brand-orange/10 text-brand-orange' },
   { href: '/', label: '瀏覽課程', desc: '探索更多學習內容', icon: BookOpen, color: 'bg-brand-rose/10 text-brand-rose' },

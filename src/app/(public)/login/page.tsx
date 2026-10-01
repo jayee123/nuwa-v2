@@ -1,5 +1,4 @@
 import type { Metadata } from 'next'
-import Link from 'next/link'
 import { Suspense } from 'react'
 import { LoginForm } from '@/components/auth/login-form'
 import { Logo } from '@/components/ui/logo'
@@ -51,15 +50,6 @@ export default function LoginPage() {
             <Suspense fallback={<div className="h-64" />}>
               <LoginForm />
             </Suspense>
-          </div>
-
-          <div className="mt-6 text-center">
-            <Link
-              href="/guest/happy"
-              className="text-sm text-accent-primary hover:underline"
-            >
-              不想註冊？免費體驗看看
-            </Link>
           </div>
         </div>
       </div>

@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { SubscribePlans } from '@/components/payment/subscribe-plans'
 import { getActivePlans } from '@/lib/queries/plans'
+import { getDialogQuota, dialogQuotaLabel } from '@/lib/queries/dialog-quota'
 
 export const metadata: Metadata = { title: 'AI 對話方案 — 羽升幸福養成學苑' }
 
@@ -27,17 +28,17 @@ export default async function SubscribePage({
   if (!service) notFound()
 
   let currentPlan = 'free'
-  let dialogLimit = 0
+  let quotaLabel = ''
   let nextPlan: string | null = null
   let planDeadline: string | null = null
   if (user) {
-    const { data: userData } = await admin
-      .from('users')
-      .select('current_plan, dialog_limit, next_plan, plan_deadline')
-      .eq('id', user.id)
-      .single()
+    const [{ data: userData }, quota] = await Promise.all([
+      admin.from('users').select('current_plan, next_plan, plan_deadline').eq('id', user.id).single(),
+      // 本期 AI 對話（各 App 共用一池）；舊的 users.dialog_limit 不再顯示
+      getDialogQuota(admin, user.id),
+    ])
     currentPlan = userData?.current_plan ?? 'free'
-    dialogLimit = userData?.dialog_limit ?? 0
+    quotaLabel = dialogQuotaLabel(quota)
     nextPlan = userData?.next_plan ?? null
     planDeadline = userData?.plan_deadline ?? null
   }
@@ -63,7 +64,7 @@ export default async function SubscribePage({
             serviceName={service.name}
             plans={plans}
             currentPlan={currentPlan}
-            dialogLimit={dialogLimit}
+            quotaLabel={quotaLabel}
             nextPlan={nextPlan}
             planDeadline={planDeadline}
           />

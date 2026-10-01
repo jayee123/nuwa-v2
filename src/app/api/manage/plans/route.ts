@@ -74,6 +74,11 @@ export async function DELETE(request: Request) {
   if (!ctx.isSuper) return NextResponse.json({ error: '只有 superadmin 能維護方案' }, { status: 403 })
   const id = new URL(request.url).searchParams.get('id')
   if (!id) return NextResponse.json({ error: '缺少 id' }, { status: 400 })
+  // free 是免費會員對話次數的設定來源（migration 030），刪掉就等於免費會員沒有額度可查
+  const { data: target } = await ctx.admin.from('plans').select('code').eq('id', id).maybeSingle()
+  if (target?.code === 'free') {
+    return NextResponse.json({ error: '免費方案是系統方案，不能刪除（次數可以直接編輯）' }, { status: 400 })
+  }
   const { error } = await ctx.admin.from('plans').delete().eq('id', id)
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   await logAudit(ctx.admin, ctx.userId, 'plan.delete', id)

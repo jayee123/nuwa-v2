@@ -66,6 +66,15 @@ export function ForgotPasswordForm() {
     return () => clearTimeout(t)
   }, [cooldown])
 
+  // 與 register-form 相同的正規化：清空白/橫線、+886 沒打開頭 0 就補上。
+  // 這裡曾漏掉補零 —— 使用者照畫面「+886｜905376287」輸入時，
+  // 簡訊發給不存在的「905376287」，永遠收不到（2026-09-21 Steve 實測踩到）。
+  // 之後 verify / 重設密碼也都用同一個字串，才對得上 users.phone。
+  const normalizePhone = useCallback((raw: string) => {
+    const cleaned = raw.replace(/[\s\-()]/g, '')
+    return countryCode === '+886' && !cleaned.startsWith('0') ? '0' + cleaned : cleaned
+  }, [countryCode])
+
   // Send SMS
   const handleSendSms = useCallback(async () => {
     form1.clearErrors('phone')
@@ -80,7 +89,7 @@ export function ForgotPasswordForm() {
       const res = await fetch('/api/auth/sms/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: phoneVal, countryCode }),
+        body: JSON.stringify({ phone: normalizePhone(phoneVal), countryCode }),
       })
       const data = await res.json()
       if (!res.ok) {
@@ -93,7 +102,7 @@ export function ForgotPasswordForm() {
     } finally {
       setSmsSending(false)
     }
-  }, [form1])
+  }, [form1, normalizePhone, countryCode])
 
   // Step 1: verify OTP
   async function onStep1Submit(values: Step1Values) {
@@ -102,14 +111,14 @@ export function ForgotPasswordForm() {
       const res = await fetch('/api/auth/sms/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: values.phone, code: values.otp }),
+        body: JSON.stringify({ phone: normalizePhone(values.phone), code: values.otp }),
       })
       const data = await res.json()
       if (!res.ok) {
         setServerError(data.error)
         return
       }
-      setPhone(values.phone)
+      setPhone(normalizePhone(values.phone))
       setStep(2)
     } catch {
       setServerError('網路錯誤，請稍後再試')

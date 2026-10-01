@@ -27,10 +27,9 @@ test.describe('付款回呼', () => {
     expect(await res.text()).toContain('ChkValue')
   })
 
-  test('查無此訂單時回 404、不會回 OK', async ({ request }) => {
-    // 注意：目前實作是 `if (chkValue && localChk !== chkValue)`，
-    // 也就是「沒帶 ChkValue 就跳過驗簽」。這裡確認即使跳過驗簽，
-    // 也會因為查無訂單而擋下 —— 但驗簽本身應該改成必填。
+  test('沒帶 ChkValue 也回 400 —— 驗簽是必填，不是選填', async ({ request }) => {
+    // 以前是「有帶才驗」：用戶自己 initiate 拿到 Td 後，POST 一個不帶 ChkValue 的
+    // 回呼就能把自己的 pending 標成 paid、白拿一個月訂閱。這裡釘死不准再退回去。
     const res = await request.post(ENDPOINT, {
       multipart: {
         Td: 'NON-EXISTENT-ORDER',
@@ -41,8 +40,15 @@ test.describe('付款回呼', () => {
       },
     })
 
-    expect(res.status()).toBe(404)
-    expect(await res.text()).not.toBe('OK')
+    expect(res.status(), '缺 ChkValue 必須在查訂單之前就被擋下').toBe(400)
+    expect(await res.text()).toContain('ChkValue')
+  })
+
+  test('缺 Td 或 MN 也回 400', async ({ request }) => {
+    const res = await request.post(ENDPOINT, {
+      multipart: { errcode: '00', ChkValue: 'ABC' },
+    })
+    expect(res.status()).toBe(400)
   })
 
   test('GET 不被接受（只允許 POST）', async ({ request }) => {

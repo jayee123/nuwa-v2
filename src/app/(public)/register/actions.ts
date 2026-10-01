@@ -2,7 +2,7 @@
 
 import { createAdminClient } from '@/lib/supabase/admin'
 import { redirect } from 'next/navigation'
-import { formatPhoneE164 } from '@/lib/phone'
+import { formatPhoneE164, normalizeLocalPhone } from '@/lib/phone'
 import { isRegisterInviteRequired } from '@/lib/system-params'
 
 interface RegisterData {
@@ -20,7 +20,10 @@ interface RegisterData {
 export async function register(data: RegisterData) {
   const supabase = createAdminClient()
 
-  const phone = formatPhoneE164(data.phone, data.countryCode)
+  // 伺服器端統一正規化（Jeff 2026-09-21）：有沒有補零都收斂成儲存格式，
+  // 查驗證記錄、撞號檢查、users.phone 寫入全用同一個字串。
+  const localPhone = normalizeLocalPhone(data.phone, data.countryCode)
+  const phone = formatPhoneE164(localPhone, data.countryCode)
 
   // Email 必填（電子發票 + 支援 Email 登入）
   const email = data.email?.trim().toLowerCase()
@@ -42,7 +45,7 @@ export async function register(data: RegisterData) {
   const { data: verified } = await supabase
     .from('sms_verifications')
     .select('id')
-    .eq('phone', data.phone)
+    .eq('phone', localPhone)
     .eq('verified', true)
     .order('created_at', { ascending: false })
     .limit(1)
@@ -56,7 +59,7 @@ export async function register(data: RegisterData) {
   const { data: existing } = await supabase
     .from('users')
     .select('id')
-    .eq('phone', data.phone)
+    .eq('phone', localPhone)
     .single()
 
   if (existing) {
@@ -109,7 +112,7 @@ export async function register(data: RegisterData) {
   // Insert into users table
   const { error: insertError } = await supabase.from('users').insert({
     id: authData.user.id,
-    phone: data.phone,
+    phone: localPhone,
     nickname: data.nickname,
     gender: data.gender ?? null,
     birthday: data.birthday || null,
@@ -136,7 +139,7 @@ export async function register(data: RegisterData) {
   await supabase
     .from('sms_verifications')
     .delete()
-    .eq('phone', data.phone)
+    .eq('phone', localPhone)
 
   redirect('/dashboard')
 }

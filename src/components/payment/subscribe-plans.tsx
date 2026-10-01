@@ -72,7 +72,7 @@ export function SubscribePlans({
   serviceName,
   plans,
   currentPlan,
-  dialogLimit,
+  quotaLabel,
   nextPlan,
   planDeadline,
 }: {
@@ -80,7 +80,8 @@ export function SubscribePlans({
   serviceName: string
   plans: Plan[]
   currentPlan: string
-  dialogLimit: number
+  /** 「本期已用 N／M 次・10/20 重置」；未登入為空字串 */
+  quotaLabel: string
   nextPlan: string | null
   planDeadline: string | null
 }) {
@@ -197,7 +198,7 @@ export function SubscribePlans({
         </div>
 
         <p className="mt-3 text-xs text-fg-muted">
-          ● 目前方案：{CODE_TO_NAME[currentPlan] ?? currentPlan}（剩餘 {dialogLimit} 次）
+          ● 目前方案：{CODE_TO_NAME[currentPlan] ?? currentPlan}{quotaLabel && `（${quotaLabel}）`}
           {deadlineDisplay && ` · 到期日：${deadlineDisplay}`}
         </p>
 

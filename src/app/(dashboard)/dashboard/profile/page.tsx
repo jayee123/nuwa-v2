@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { StatsCard } from '@/components/dashboard/stats-card'
 import { ProfileForm } from '@/components/dashboard/profile-form'
 import { AvatarUpload } from '@/components/dashboard/avatar-upload'
+import { getDialogQuota } from '@/lib/queries/dialog-quota'
 
 export const metadata: Metadata = {
   title: '個人資訊 — 羽升幸福養成學苑',
@@ -39,7 +40,8 @@ export default async function ProfilePage() {
     .eq('user_id', user.id)
     .not('completed_at', 'is', null)
 
-  // Monthly active learning days (unit progress + chat messages this month)
+  // Monthly active learning days (unit progress this month)
+  // 2026-09-26 決定：公版不再有 AI，chat_messages 不再算進學習活動
   const monthStart = new Date()
   monthStart.setDate(1)
   monthStart.setHours(0, 0, 0, 0)
@@ -51,20 +53,10 @@ export default async function ProfilePage() {
     .eq('user_id', user.id)
     .gte('updated_at', monthStartStr)
 
-  const { data: chatDates } = await admin
-    .from('chat_messages')
-    .select('created_at, chat_topics!inner(user_id)')
-    .eq('chat_topics.user_id', user.id)
-    .eq('role', 'user')
-    .gte('created_at', monthStartStr)
-
   // Collect unique active dates this month
   const activeDatesSet = new Set<string>()
   for (const r of progressDates ?? []) {
     activeDatesSet.add(new Date(r.updated_at).toISOString().slice(0, 10))
-  }
-  for (const r of chatDates ?? []) {
-    activeDatesSet.add(new Date(r.created_at).toISOString().slice(0, 10))
   }
 
   // Estimate monthly study hours: active sessions × 0.5 hr each
@@ -72,7 +64,7 @@ export default async function ProfilePage() {
 
   // Consecutive learning days (count backwards from today)
   const allDates = new Set<string>()
-  // Fetch all recent progress and chat activity
+  // Fetch all recent progress activity
   const { data: recentProgress } = await admin
     .from('user_unit_progress')
     .select('updated_at')
@@ -80,19 +72,8 @@ export default async function ProfilePage() {
     .order('updated_at', { ascending: false })
     .limit(90)
 
-  const { data: recentChats } = await admin
-    .from('chat_messages')
-    .select('created_at, chat_topics!inner(user_id)')
-    .eq('chat_topics.user_id', user.id)
-    .eq('role', 'user')
-    .order('created_at', { ascending: false })
-    .limit(90)
-
   for (const r of recentProgress ?? []) {
     allDates.add(new Date(r.updated_at).toISOString().slice(0, 10))
-  }
-  for (const r of recentChats ?? []) {
-    allDates.add(new Date(r.created_at).toISOString().slice(0, 10))
   }
 
   let streak = 0
@@ -107,11 +88,19 @@ export default async function ProfilePage() {
     d.setDate(d.getDate() - 1)
   }
 
+  // 本期 AI 對話（各 App 共用一池，讀 ai_dialog_usage）—— 取代舊的「剩餘 AI 對話」
+  // （users.dialog_limit 只剩公版已移除的 AI 在扣，數字已無意義）
+  const quota = await getDialogQuota(admin, user.id)
+
   const STATS = [
     { value: monthlyHours > 0 ? String(monthlyHours) : '0', unit: '小時', label: '本月學習時數' },
     { value: String(streak), unit: '天', label: '連續學習天數' },
     { value: String(completedUnits ?? 0), unit: '節', label: '已完成小節' },
-    { value: String(userData.dialog_limit ?? 0), unit: '次', label: '剩餘 AI 對話' },
+    {
+      value: quota ? `${quota.used}／${quota.limit}` : '—',
+      unit: '次',
+      label: quota ? `本期 AI 對話・${quota.nextResetLabel} 重置` : '本期 AI 對話',
+    },
   ]
 
   return (

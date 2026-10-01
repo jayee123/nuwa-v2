@@ -1,6 +1,6 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { Users, DollarSign, Activity, CalendarCheck, MessageSquare, Puzzle, TrendingUp, Cpu, Coins } from 'lucide-react'
+import { Users, DollarSign, CalendarCheck, Coins } from 'lucide-react'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { StatCard } from '@/components/manage/stat-card'
 
@@ -13,32 +13,16 @@ export default async function ManageDashboardPage() {
   const now = new Date()
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString()
   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString()
-  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString()
-  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString()
 
   // Fetch all stats in parallel
-  const [
-    usersRes,
-    paymentsRes,
-    regsRes,
-    todayUsersRes,
-    unpackTopicsRes,
-    journeyTopicsRes,
-    active7dRes,
-    active30dRes,
-    totalMessagesRes,
-    aiUsageRes,
-  ] = await Promise.all([
+  // 2026-09-26 決定：公版自己的 AI 已移除，chat_topics / chat_messages 的統計一併拿掉
+  //（那兩張表觀察一週後會刪）。AI 用量只剩各 App 回寫的 ai_token_usage。
+  const [usersRes, paymentsRes, regsRes, todayUsersRes, aiUsageRes] = await Promise.all([
     // 020: 統計不計入軟刪除用戶
     admin.from('users').select('id', { count: 'exact', head: true }).is('deleted_at', null),
     admin.from('payments').select('amount').eq('status', 'paid').gte('created_at', monthStart),
     admin.from('registrations').select('id', { count: 'exact', head: true }).gte('created_at', monthStart),
     admin.from('users').select('id', { count: 'exact', head: true }).is('deleted_at', null).gte('created_at', todayStart),
-    admin.from('chat_topics').select('id', { count: 'exact', head: true }).eq('mode', 'unpack'),
-    admin.from('chat_topics').select('id', { count: 'exact', head: true }).eq('mode', 'journey'),
-    admin.from('chat_messages').select('topic_id').eq('role', 'user').gte('created_at', sevenDaysAgo),
-    admin.from('chat_messages').select('topic_id').eq('role', 'user').gte('created_at', thirtyDaysAgo),
-    admin.from('chat_messages').select('id', { count: 'exact', head: true }),
     // 023: 本月 AI 用量與成本（跨 App 歸戶後為平台層數字）
     admin.from('ai_token_usage').select('tokens_used, cost_twd').gte('date', monthStart.slice(0, 10)),
   ])
@@ -47,11 +31,6 @@ export default async function ManageDashboardPage() {
   const monthlyRevenue = (paymentsRes.data ?? []).reduce((sum, p) => sum + (p.amount || 0), 0)
   const monthlyRegs = regsRes.count ?? 0
   const todayNewUsers = todayUsersRes.count ?? 0
-  const unpackTopics = unpackTopicsRes.count ?? 0
-  const journeyTopics = journeyTopicsRes.count ?? 0
-  const active7d = new Set((active7dRes.data ?? []).map(r => r.topic_id)).size
-  const active30d = new Set((active30dRes.data ?? []).map(r => r.topic_id)).size
-  const totalMessages = totalMessagesRes.count ?? 0
   const aiRows = aiUsageRes.data ?? []
   const monthlyAiCost = aiRows.reduce((sum, r) => sum + Number(r.cost_twd ?? 0), 0)
   const monthlyAiTokens = aiRows.reduce((sum, r) => sum + Number(r.tokens_used ?? 0), 0)
@@ -61,7 +40,7 @@ export default async function ManageDashboardPage() {
       <h1 className="font-heading text-2xl font-bold text-fg-primary">統計總覽</h1>
 
       {/* 營運指標 */}
-      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard
           label="總用戶數"
           value={totalUsers.toLocaleString()}
@@ -79,11 +58,6 @@ export default async function ManageDashboardPage() {
           value={monthlyRegs.toLocaleString()}
           icon={CalendarCheck}
         />
-        <StatCard
-          label="總對話訊息"
-          value={totalMessages.toLocaleString()}
-          icon={MessageSquare}
-        />
       </div>
 
       {/* AI 指標 */}
@@ -96,31 +70,7 @@ export default async function ManageDashboardPage() {
           查看用量明細（按會員歸戶）→
         </Link>
       </div>
-      <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        <StatCard
-          label="解卡點對話"
-          value={unpackTopics.toLocaleString()}
-          change="Mode B — 我卡住幫我拆"
-          changeType="neutral"
-          icon={Puzzle}
-        />
-        <StatCard
-          label="21 天練習"
-          value={journeyTopics.toLocaleString()}
-          change="Mode A — 刻意練習"
-          changeType="neutral"
-          icon={TrendingUp}
-        />
-        <StatCard
-          label="7 天活躍對話"
-          value={active7d.toLocaleString()}
-          icon={Activity}
-        />
-        <StatCard
-          label="30 天活躍對話"
-          value={active30d.toLocaleString()}
-          icon={Cpu}
-        />
+      <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {/* 023：跨 App 歸戶後，AI 成本是平台層數字 —— 點進去看各會員 / 各 App 拆分 */}
         <Link href="/manage/ai-usage" className="block transition-opacity hover:opacity-80">
           <StatCard
@@ -133,9 +83,9 @@ export default async function ManageDashboardPage() {
         </Link>
       </div>
 
-      <div className="mt-8 grid gap-6 lg:grid-cols-3">
+      <div className="mt-8 grid gap-6">
         {/* Revenue chart placeholder */}
-        <div className="col-span-2 rounded-xl border border-surface-secondary bg-white p-6">
+        <div className="rounded-xl border border-surface-secondary bg-white p-6">
           <div className="flex items-center justify-between">
             <h2 className="font-heading text-lg font-semibold text-fg-primary">營收趨勢</h2>
             <div className="flex gap-1 rounded-lg bg-surface-secondary p-1 text-xs">
@@ -157,48 +107,7 @@ export default async function ManageDashboardPage() {
             ))}
           </div>
         </div>
-
-        {/* Mode breakdown */}
-        <div className="rounded-xl border border-surface-secondary bg-white p-6">
-          <h2 className="font-heading text-lg font-semibold text-fg-primary">對話模式分佈</h2>
-          <div className="mt-6 space-y-4">
-            <div>
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-fg-secondary">解卡點（Mode B）</span>
-                <span className="font-medium text-fg-primary">{unpackTopics}</span>
-              </div>
-              <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-surface-secondary">
-                <div
-                  className="h-full rounded-full bg-brand-purple"
-                  style={{ width: `${(unpackTopics + journeyTopics) > 0 ? (unpackTopics / (unpackTopics + journeyTopics)) * 100 : 50}%` }}
-                />
-              </div>
-            </div>
-            <div>
-              <div className="flex items-center justify-between text-sm">
-                <span className="text-fg-secondary">21 天練習（Mode A）</span>
-                <span className="font-medium text-fg-primary">{journeyTopics}</span>
-              </div>
-              <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-surface-secondary">
-                <div
-                  className="h-full rounded-full bg-brand-teal"
-                  style={{ width: `${(unpackTopics + journeyTopics) > 0 ? (journeyTopics / (unpackTopics + journeyTopics)) * 100 : 50}%` }}
-                />
-              </div>
-            </div>
-          </div>
-          <div className="mt-6 rounded-lg bg-surface-secondary/50 p-3">
-            <p className="text-xs text-fg-muted">
-              升維 Stack：L1 解卡點 → L2 21 天練習 → L3 心智成長
-            </p>
-            <p className="mt-1 text-xs text-fg-muted">
-              轉化率：{(unpackTopics + journeyTopics) > 0
-                ? `${((journeyTopics / (unpackTopics + journeyTopics)) * 100).toFixed(1)}%`
-                : 'N/A'
-              } 從解卡進入練習
-            </p>
-          </div>
-        </div>
+        {/* 「對話模式分佈」卡片隨公版 AI 移除（2026-09-26）一起拿掉 */}
       </div>
     </div>
   )

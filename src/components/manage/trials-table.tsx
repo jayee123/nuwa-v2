@@ -31,8 +31,36 @@ function daysLeft(expiresAt: string, now: Date): number {
   return Math.ceil((new Date(expiresAt).getTime() - now.getTime()) / (24 * 60 * 60 * 1000))
 }
 
-export function TrialsTable({ rows }: { rows: TrialTableRow[] }) {
+export function TrialsTable({ rows: initialRows }: { rows: TrialTableRow[] }) {
   const [search, setSearch] = useState('')
+  // 重置會把列刪掉，所以列表要能自己變動（不再直接用 props）
+  const [rows, setRows] = useState<TrialTableRow[]>(initialRows)
+  // 兩段式確認：第一次點「重置」只是把該列標成待確認，再點一次才真的送出。
+  // 不用 window.confirm —— 瀏覽器原生 modal 會擋住整個分頁，也不好測。
+  const [confirmId, setConfirmId] = useState<string | null>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  async function reset(id: string) {
+    setBusyId(id)
+    setError(null)
+    try {
+      const res = await fetch(`/api/manage/trials/${id}`, { method: 'DELETE' })
+      const json = await res.json()
+      if (!res.ok) {
+        setError(json.error || '重置失敗')
+        return
+      }
+      // 不可變更新：產生新陣列，不動原本那個
+      setRows((prev) => prev.filter((r) => r.id !== id))
+      setConfirmId(null)
+    } catch {
+      setError('網路錯誤，請重試')
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   const now = new Date()
   const q = search.trim().toLowerCase()
   const shown = q
@@ -61,6 +89,9 @@ export function TrialsTable({ rows }: { rows: TrialTableRow[] }) {
           className="w-64 rounded-lg border border-surface-secondary px-3 py-1.5 text-sm focus:border-brand-purple focus:outline-none"
         />
       </div>
+      {error && (
+        <p className="mt-2 text-right text-sm text-destructive">{error}</p>
+      )}
       {shown.length === 0 ? (
         <div className="mt-4 rounded-2xl bg-white p-8 text-center text-sm text-fg-muted shadow-sm">
           {q ? '沒有符合搜尋的試用紀錄' : '還沒有任何試用紀錄'}
@@ -76,6 +107,7 @@ export function TrialsTable({ rows }: { rows: TrialTableRow[] }) {
                 <th className="px-4 py-3">開始</th>
                 <th className="px-4 py-3">到期</th>
                 <th className="px-4 py-3">狀態</th>
+                <th className="px-4 py-3 text-right">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -108,6 +140,33 @@ export function TrialsTable({ rows }: { rows: TrialTableRow[] }) {
                         <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-500">
                           已到期
                         </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      {confirmId === r.id ? (
+                        <>
+                          <button
+                            onClick={() => reset(r.id)}
+                            disabled={busyId === r.id}
+                            className="rounded-lg bg-red-600 px-2.5 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                          >
+                            {busyId === r.id ? '重置中…' : '確定重置'}
+                          </button>
+                          <button
+                            onClick={() => setConfirmId(null)}
+                            disabled={busyId === r.id}
+                            className="ml-2 text-xs text-fg-muted hover:underline disabled:opacity-50"
+                          >
+                            取消
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          onClick={() => { setConfirmId(r.id); setError(null) }}
+                          className="text-xs text-brand-purple hover:underline"
+                        >
+                          重置試用
+                        </button>
                       )}
                     </td>
                   </tr>
