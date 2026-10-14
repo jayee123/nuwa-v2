@@ -148,7 +148,7 @@ export function UserTable({
   }
 
   function handleExport() {
-    const headers = ['用戶名稱', 'NUWA ID', '手機', 'Email', '性別', '生日', '角色', '方案', '點數', '到期日', '註冊時間']
+    const headers = ['用戶名稱', 'NUWA ID', '手機', 'Email', '性別', '生日', '角色', '方案', '對話次數', '到期日', '註冊時間']
     const rows = filtered.map((u) => [
       u.nickname ?? '',
       u.id,
@@ -216,7 +216,7 @@ export function UserTable({
               <th className="px-5 py-3">手機</th>
               <th className="px-5 py-3">角色</th>
               <th className="px-5 py-3">方案</th>
-              <th className="px-5 py-3">點數</th>
+              <th className="px-5 py-3">對話次數</th>
               <th className="px-5 py-3">到期日</th>
               <th className="px-5 py-3">註冊時間</th>
               <th className="px-5 py-3">操作</th>
@@ -401,7 +401,7 @@ export function UserTable({
                   </select>
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-fg-primary">對話點數</label>
+                  <label className="text-sm font-medium text-fg-primary">對話次數</label>
                   <Input
                     type="number"
                     value={editDialogLimit}
