@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import Link from 'next/link'
-import { Check } from 'lucide-react'
+import { Check, Clock } from 'lucide-react'
+import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { PLAN_FULL_NAME } from '@/lib/plans'
 import { Button } from '@/components/ui/button'
@@ -13,6 +14,8 @@ export default async function PaymentSuccessPage({
   searchParams: Promise<{ td?: string }>
 }) {
   const { td } = await searchParams
+  const supabase = await createClient()
+  const { data: { user: viewer } } = await supabase.auth.getUser()
   const admin = createAdminClient()
 
   let payment: { plan_name: string | null; amount: number; paid_at: string | null } | null = null
@@ -20,12 +23,16 @@ export default async function PaymentSuccessPage({
   let userEmail = ''
   let endsAt = ''
 
-  if (td) {
+  // 只顯示「自己的、已付款」的訂單。以前任何人拿到訂單編號都看得到別人的 Email，
+  // 而且不管付款成功與否都顯示「付款成功」。
+  if (td && viewer) {
     const { data } = await admin
       .from('payments')
       .select('plan_name, amount, paid_at, service_id, user_id')
       .eq('payment_uid', td)
-      .single()
+      .eq('user_id', viewer.id)
+      .eq('status', 'paid')
+      .maybeSingle()
     payment = data
 
     if (data?.service_id) {
@@ -48,12 +55,18 @@ export default async function PaymentSuccessPage({
           {/* Icon */}
           <div className="mx-auto flex size-16 items-center justify-center rounded-full bg-brand-teal/20">
             <div className="flex size-12 items-center justify-center rounded-full bg-brand-teal/30">
-              <Check className="size-6 text-brand-teal" />
+              {payment ? <Check className="size-6 text-brand-teal" /> : <Clock className="size-6 text-brand-teal" />}
             </div>
           </div>
 
-          <h1 className="mt-6 font-heading text-2xl font-bold text-fg-primary">付款成功！</h1>
-          <p className="mt-2 text-sm text-fg-secondary">感謝您的訂閱，現在就開始學習吧</p>
+          <h1 className="mt-6 font-heading text-2xl font-bold text-fg-primary">
+            {payment ? '付款成功！' : '還沒有收到付款結果'}
+          </h1>
+          <p className="mt-2 text-sm text-fg-secondary">
+            {payment
+              ? '感謝您的訂閱，現在就開始學習吧'
+              : '如果剛付完款，請稍等幾秒後重新整理；仍未更新請聯絡客服。'}
+          </p>
 
           {/* Order details */}
           {payment && (

@@ -91,7 +91,8 @@ export async function PATCH(request: Request) {
     }
     allowed.birthday = birthday
   }
-  if (updates.dialog_limit !== undefined) allowed.dialog_limit = Number(updates.dialog_limit)
+  // dialog_limit（舊制「剩餘次數」）不再由後台寫：新制額度不讀它，改了沒效果。
+  // 要補次數走 POST /api/manage/users/:id/grants。
   if (updates.current_plan !== undefined) allowed.current_plan = updates.current_plan
   if (updates.plan_deadline !== undefined) allowed.plan_deadline = updates.plan_deadline || null
 

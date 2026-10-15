@@ -19,7 +19,21 @@ const CATEGORIES: { title: string; keys: string[] }[] = [
     keys: ['OPENAI_API_KEY'],
   },
   {
-    title: 'esafe 金流',
+    // 新版金流。特店代號／SHA2 密鑰／RSA 公鑰在紅陽後台「開發者專區」；
+    // 轉送站密鑰與 TOKEN_KEY 用 openssl rand -hex 32 產生（轉送站那份要跟 berth 上的一致）
+    title: '紅陽 SunPay v3 金流（新版）',
+    keys: [
+      'SUNPAY_WEB',
+      'SUNPAY_SHA2_SECRET',
+      'SUNPAY_RSA_PUBLIC_KEY',
+      'SUNPAY_TRADE_URL',
+      'SUNPAY_RELAY_URL',
+      'SUNPAY_RELAY_SECRET',
+      'SUNPAY_TOKEN_KEY',
+    ],
+  },
+  {
+    title: 'esafe 金流（舊版，停用中）',
     keys: [
       'ESAFE_MERCHANT_ID',
       'ESAFE_PASSWORD',

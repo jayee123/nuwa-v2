@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { useSearchParams, useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { ArrowRight, Loader2, CreditCard, CheckCircle } from 'lucide-react'
@@ -14,15 +14,12 @@ export default function CheckoutPage({
   const router = useRouter()
   const searchParams = useSearchParams()
   const planCode = searchParams.get('plan') ?? ''
-  const billing = searchParams.get('billing') ?? 'monthly'
   const [planLabel, setPlanLabel] = useState('')
 
-  const formRef = useRef<HTMLFormElement>(null)
   const [code, setCode] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [esafe, setEsafe] = useState<{ url: string; params: Record<string, string | number> } | null>(null)
-  const [submitted, setSubmitted] = useState(false)
+  const [payUrl, setPayUrl] = useState<string | null>(null)
   const [paymentId, setPaymentId] = useState<string | null>(null)
   const [polling, setPolling] = useState(false)
   const [paymentDone, setPaymentDone] = useState(false)
@@ -50,13 +47,11 @@ export default function CheckoutPage({
         }
         setPlanLabel(plan.name)
 
-        // 收費 = 每月收費金額；年繳打八折
-        const fullPrice = billing === 'yearly' ? Math.round(plan.monthly_charge * 12 * 0.8) : plan.monthly_charge
-
+        // 金額由伺服器依方案表計算，前端不傳
         const res = await fetch('/api/payment/initiate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ planCode, amount: fullPrice, serviceCode: code, billing }),
+          body: JSON.stringify({ planCode, serviceCode: code }),
         })
 
         if (!res.ok) {
@@ -67,9 +62,11 @@ export default function CheckoutPage({
         }
 
         const data = await res.json()
-        setEsafe(data.esafe)
+        setPayUrl(data.payUrl)
         setPaymentId(data.paymentId)
         setLoading(false)
+        // 紅陽付款頁另開視窗（手冊要求）。被瀏覽器擋下彈窗時，畫面會顯示「前往付款」按鈕讓使用者自己點。
+        if (window.open(data.payUrl, 'sunpay_payment')) setPolling(true)
       } catch {
         setError('系統錯誤，請重試')
         setLoading(false)
@@ -77,19 +74,11 @@ export default function CheckoutPage({
     }
 
     initiate()
-  }, [code, planCode, billing])
+  }, [code, planCode])
 
-  // Auto-submit eSafe form (opens in named popup window)
-  useEffect(() => {
-    if (esafe && formRef.current && !submitted) {
-      setSubmitted(true)
-      // Use named target to avoid extra about:blank tab
-      formRef.current.target = 'esafe_payment'
-      window.open('about:blank', 'esafe_payment')
-      formRef.current.submit()
-      setPolling(true)
-    }
-  }, [esafe, submitted])
+  const openPayment = useCallback(() => {
+    if (payUrl && window.open(payUrl, 'sunpay_payment')) setPolling(true)
+  }, [payUrl])
 
   // Poll payment status
   const pollPayment = useCallback(async () => {
@@ -168,7 +157,7 @@ export default function CheckoutPage({
           <p className="mt-4 text-xs text-fg-muted">
             如果付款視窗被關閉，
             <button
-              onClick={() => formRef.current?.submit()}
+              onClick={openPayment}
               className="text-brand-purple underline"
             >
               點此重新開啟
@@ -200,7 +189,7 @@ export default function CheckoutPage({
             <h2 className="mt-4 font-heading text-xl font-bold text-fg-primary">升級至 {planLabel || '方案'}</h2>
             <p className="mt-2 text-sm text-fg-secondary">點擊下方按鈕前往付款</p>
             <Button
-              onClick={() => { formRef.current?.submit(); setPolling(true) }}
+              onClick={openPayment}
               className="mt-6 h-12 w-full rounded-xl bg-brand-purple text-base font-medium text-white hover:bg-brand-purple/90"
             >
               前往付款 <ArrowRight className="ml-2 size-4" />
@@ -216,14 +205,6 @@ export default function CheckoutPage({
         </Link>
       </div>
 
-      {/* Hidden eSafe form */}
-      {esafe && (
-        <form ref={formRef} method="POST" action={esafe.url} className="hidden">
-          {Object.entries(esafe.params).map(([key, value]) => (
-            <input key={key} name={key} value={String(value)} readOnly />
-          ))}
-        </form>
-      )}
     </div>
   )
 }

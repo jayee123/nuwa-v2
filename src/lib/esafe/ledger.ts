@@ -10,7 +10,11 @@ import type { SupabaseClient } from '@supabase/supabase-js'
  * 本函式再防禦性剔除一次 —— 卡片 token 永不入這張表。
  */
 
-const SENSITIVE_KEYS = ['tokenData', 'ChkValue', 'chkValue', 'token_data', 'paymentToken']
+const SENSITIVE_KEYS = [
+  'tokenData', 'ChkValue', 'chkValue', 'token_data', 'paymentToken',
+  // SunPay v3
+  'token_key', 'save_card_token', 'card_no', 'rsamsg', 'check_value',
+]
 
 export interface GatewayTxInput {
   userId?: string | null

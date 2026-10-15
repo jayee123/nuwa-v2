@@ -86,17 +86,11 @@ export function SubscribePlans({
   planDeadline: string | null
 }) {
   const router = useRouter()
-  const [billing, setBilling] = useState<'monthly' | 'yearly'>('monthly')
   const [downgrading, setDowngrading] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
 
   const currentLevel = PLAN_LEVEL[currentPlan] ?? 0
-
-  function getPrice(plan: Plan) {
-    if (billing === 'yearly') return Math.round(plan.price * 12 * 0.8)
-    return plan.price
-  }
 
   function isCurrent(plan: Plan) {
     return plan.code === currentPlan
@@ -172,31 +166,7 @@ export function SubscribePlans({
           所有課程共用對話額度，升級即刻生效
         </p>
 
-        {/* Billing toggle */}
-        <div className="mt-6 inline-flex items-center gap-2 rounded-full bg-surface-secondary p-1">
-          <button
-            onClick={() => setBilling('monthly')}
-            className={cn(
-              'rounded-full px-5 py-2 text-sm font-medium transition-colors',
-              billing === 'monthly' ? 'bg-white text-fg-primary shadow-sm' : 'text-fg-muted'
-            )}
-          >
-            月繳
-          </button>
-          <button
-            onClick={() => setBilling('yearly')}
-            className={cn(
-              'rounded-full px-5 py-2 text-sm font-medium transition-colors',
-              billing === 'yearly' ? 'bg-white text-fg-primary shadow-sm' : 'text-fg-muted'
-            )}
-          >
-            年繳
-          </button>
-          {billing === 'yearly' && (
-            <Badge className="rounded-full bg-brand-orange text-[10px] text-white">省 20%</Badge>
-          )}
-        </div>
-
+        {/* 年繳暫停販售（見 lib/billing-cycle.ts），只顯示月繳價格 */}
         <p className="mt-3 text-xs text-fg-muted">
           ● 目前方案：{CODE_TO_NAME[currentPlan] ?? currentPlan}{quotaLabel && `（${quotaLabel}）`}
           {deadlineDisplay && ` · 到期日：${deadlineDisplay}`}
@@ -233,8 +203,7 @@ export function SubscribePlans({
           // 卡片實際是不是深色底：current 會把背景蓋成白底（見下方 className），
           // 此時文字仍用 isPremium 判斷就會變成白底白字 → 文字色一律看 isDark。
           const isDark = isPremium && !current
-          const price = getPrice(plan)
-          const yearlyMonthly = billing === 'yearly' ? Math.round(price / 12) : null
+          const price = plan.price
 
           return (
             <div
@@ -267,15 +236,9 @@ export function SubscribePlans({
                   NT$ {price.toLocaleString()}
                 </span>
                 <span className={cn('ml-1 text-sm', isDark ? 'text-white/60' : 'text-fg-muted')}>
-                  / {billing === 'yearly' ? '年' : '月'}
+                  / 月
                 </span>
               </div>
-
-              {yearlyMonthly && (
-                <p className={cn('mt-1 text-xs', isDark ? 'text-white/50' : 'text-fg-muted')}>
-                  平均 NT$ {yearlyMonthly} / 月（省 NT$ {(plan.price * 12 - price).toLocaleString()}）
-                </p>
-              )}
 
               <p className={cn('mt-2 text-sm', isDark ? 'text-white/70' : 'text-fg-secondary')}>
                 {details?.description ?? ''}
@@ -320,7 +283,7 @@ export function SubscribePlans({
                     {cancelling ? '取消中...' : '取消降級排程'}
                   </Button>
                 ) : action === 'upgrade' ? (
-                  <Link href={`/dashboard/subscribe/${serviceCode}/checkout?plan=${plan.code}&billing=${billing}`}>
+                  <Link href={`/dashboard/subscribe/${serviceCode}/checkout?plan=${plan.code}`}>
                     <Button
                       className={cn(
                         'h-11 w-full rounded-xl text-sm font-medium',

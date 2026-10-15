@@ -1,197 +1,246 @@
 import { NextResponse } from 'next/server'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { executeTokenPayment } from '@/lib/esafe/payment'
-import { decrypt } from '@/lib/esafe/crypto'
 import { getSecretParam } from '@/lib/secret-params'
 import { getPlanByCode } from '@/lib/queries/plans'
 import { PLAN_FULL_NAME } from '@/lib/plans'
 import { recordGatewayTx } from '@/lib/esafe/ledger'
+import { getSunpayConfig, type SunpayConfig } from '@/lib/sunpay/config'
+import { isOutcomeUnknown, requestSubsequentPayment } from '@/lib/sunpay/client'
+import { downgradeAfterRepeatedFailures } from '@/lib/sunpay/settle'
+import { generateOrderNo, toSunpayName, toSunpayOrderInfo, toSunpayPhone } from '@/lib/sunpay/order'
+import { isTokenExpired, isV3Token, unpackToken, type StoredToken } from '@/lib/sunpay/token-store'
 
-// Cron: auto-charge expiring subscriptions
-// Trigger: Vercel Cron daily at 00:00 UTC
+// Cron：到期訂閱自動月扣（紅陽 SunPay v3 代碼後續付款）。
+//
+// 紅陽的後續付款是非同步的：這裡送出請求、紅陽回 code=00 只代表「收下了」，
+// 付款維持 pending，實際成功／失敗由 /api/payment/sunpay/notify 收到通知時入帳並展延訂閱。
+// 送出就被拒（code≠00）的，在這裡直接記失敗；逾時等結果不明的維持 pending，不當失敗
+//（紅陽可能其實扣到了），等通知或人工對帳。
+//
+// 同一人只要還有一筆月扣 pending 就不再送 —— 寧可漏扣也不重複扣。
+// 兩個排程同時跑時，靠 migration 033 的唯一索引擋住第二筆。
+
+const STALE_PENDING_MS = 24 * 60 * 60 * 1000
+const UNIQUE_VIOLATION = '23505'
+
+interface SubUser {
+  id: string
+  email: string | null
+  phone: string | null
+  nickname: string | null
+  current_plan: string
+  next_plan: string | null
+  deleted_at: string | null
+}
+
+interface ExpiringSub {
+  id: string
+  service_id: string | null
+  users: SubUser | null
+}
+
+type ChargeOutcome = 'requested' | 'failed' | 'unknown' | 'skipped' | 'expired'
+
+function todayInTaiwan(): string {
+  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10).replace(/-/g, '')
+}
+
+async function expireToFree(admin: SupabaseClient, subId: string, userId: string): Promise<void> {
+  await admin.from('subscriptions').update({ status: 'expired' }).eq('id', subId)
+  await admin.from('users').update({ current_plan: 'free', dialog_limit: 0, next_plan: null }).eq('id', userId)
+}
+
+async function hasChargeInFlight(admin: SupabaseClient, userId: string): Promise<boolean> {
+  const { data } = await admin
+    .from('payments')
+    .select('payment_uid, created_at')
+    .eq('user_id', userId)
+    .eq('status', 'pending')
+    .like('payment_uid', 'V3R%')
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle()
+  if (!data) return false
+  if (Date.now() - new Date(data.created_at).getTime() > STALE_PENDING_MS) {
+    console.error('[auto-charge] 月扣超過一天還沒有結果，需人工對帳（紅陽後台查這張單）', { userId, td: data.payment_uid })
+  }
+  return true
+}
+
+async function latestStoredToken(
+  admin: SupabaseClient,
+  userId: string,
+  tokenKey: string,
+): Promise<{ token: StoredToken; lastAmount: number } | { error: 'none' | 'unreadable' }> {
+  const { data: lastPayment } = await admin
+    .from('payments')
+    .select('token_data, amount')
+    .eq('user_id', userId)
+    .eq('status', 'paid')
+    .like('token_data', 'v3:%')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (!lastPayment?.token_data || !isV3Token(lastPayment.token_data)) return { error: 'none' }
+  try {
+    return { token: unpackToken(lastPayment.token_data, tokenKey), lastAmount: lastPayment.amount }
+  } catch {
+    return { error: 'unreadable' }
+  }
+}
+
+async function chargeOne(admin: SupabaseClient, config: SunpayConfig, sub: ExpiringSub, today: string): Promise<ChargeOutcome> {
+  const user = sub.users
+  if (!user) return 'skipped'
+
+  // 已刪除的會員不扣款，訂閱直接收掉
+  if (user.deleted_at) {
+    await admin.from('subscriptions').update({ status: 'expired' }).eq('id', sub.id)
+    return 'expired'
+  }
+  if (await hasChargeInFlight(admin, user.id)) return 'skipped'
+
+  const stored = await latestStoredToken(admin, user.id, config.tokenKey)
+  if ('error' in stored) {
+    if (stored.error === 'unreadable') {
+      // 解不開多半是 SUNPAY_TOKEN_KEY 被換掉 —— 是我們的設定問題，不能因此把會員降級
+      console.error('[auto-charge] 卡片代碼解不開，請檢查 SUNPAY_TOKEN_KEY', { userId: user.id })
+      await recordGatewayTx(admin, {
+        userId: user.id,
+        txType: 'recurring',
+        amount: 0,
+        errcode: 'TOKEN_UNREADABLE',
+        errmsg: '卡片代碼解不開（SUNPAY_TOKEN_KEY 可能被更換）',
+        success: false,
+      })
+      return 'failed'
+    }
+    await recordGatewayTx(admin, {
+      userId: user.id,
+      txType: 'recurring',
+      amount: 0,
+      errcode: 'NO_TOKEN',
+      errmsg: '沒有新版卡片代碼，訂閱到期不續扣',
+      success: false,
+    })
+    await expireToFree(admin, sub.id, user.id)
+    return 'expired'
+  }
+  if (isTokenExpired(stored.token.tokenLife, today)) {
+    await expireToFree(admin, sub.id, user.id)
+    return 'expired'
+  }
+
+  const hasScheduledChange = !!user.next_plan && user.next_plan !== user.current_plan
+  const planCode = hasScheduledChange ? user.next_plan! : user.current_plan
+  const plan = await getPlanByCode(planCode)
+  const amount = plan && plan.monthly_charge > 0 ? plan.monthly_charge : stored.lastAmount
+  const orderNo = generateOrderNo('recurring')
+
+  // 計畫名稱存代碼（free/basic/advanced/premium），同首次付款
+  const { data: payment, error: insertError } = await admin
+    .from('payments')
+    .insert({
+      user_id: user.id,
+      service_id: sub.service_id,
+      amount,
+      plan_name: planCode,
+      payment_uid: orderNo,
+      status: 'pending',
+    })
+    .select('id')
+    .single()
+  if (insertError?.code === UNIQUE_VIOLATION) return 'skipped' // 另一個排程剛送出這個人的月扣
+  if (insertError || !payment) {
+    console.error('[auto-charge] 建立付款記錄失敗', { userId: user.id, error: insertError?.message })
+    return 'failed'
+  }
+
+  const result = await requestSubsequentPayment(config, {
+    customer: {
+      email: user.email ?? '',
+      name: toSunpayName(user.nickname),
+      phone: toSunpayPhone(user.phone),
+    },
+    amount,
+    orderInfo: toSunpayOrderInfo(
+      `自動扣款 ${PLAN_FULL_NAME[planCode] ?? planCode}${hasScheduledChange ? '（方案變更）' : ''}`,
+    ),
+    orderNo,
+    saveCardToken: stored.token.saveCardToken,
+    tokenKey: stored.token.tokenKey,
+  })
+  if (result.ok) return 'requested'
+
+  if (isOutcomeUnknown(result.code)) {
+    console.error('[auto-charge] 月扣結果不明，維持 pending 等通知或人工對帳', { userId: user.id, orderNo, code: result.code })
+    await recordGatewayTx(admin, {
+      userId: user.id,
+      paymentId: payment.id,
+      txType: 'recurring',
+      amount,
+      orderNo,
+      errcode: result.code,
+      errmsg: result.msg.slice(0, 500),
+      success: false,
+      raw: { stage: 'request_recurring', source: 'sunpay_v3' },
+      note: '結果不明：付款維持 pending，等紅陽通知；沒有通知就到紅陽後台查這張單',
+    })
+    return 'unknown'
+  }
+
+  await admin.from('payments').update({ status: 'failed' }).eq('id', payment.id).eq('status', 'pending')
+  await recordGatewayTx(admin, {
+    userId: user.id,
+    paymentId: payment.id,
+    txType: 'recurring',
+    amount,
+    orderNo,
+    errcode: result.code,
+    errmsg: result.msg.slice(0, 500),
+    success: false,
+    raw: { stage: 'request_recurring', source: 'sunpay_v3' },
+  })
+  await downgradeAfterRepeatedFailures(admin, user.id, sub.service_id)
+  return 'failed'
+}
+
 export async function GET(request: Request) {
-  const authHeader = request.headers.get('authorization')
   const cronSecret = await getSecretParam('CRON_SECRET')
-  if (authHeader !== `Bearer ${cronSecret}`) {
+  if (!cronSecret || request.headers.get('authorization') !== `Bearer ${cronSecret}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const admin = createAdminClient()
+  const configResult = await getSunpayConfig()
+  if (!configResult.ok) {
+    // 設定不完整就整批不動 —— 不能因為我們的設定問題把會員降級
+    console.error('[auto-charge] 金流設定不完整，本次不扣款', configResult.problems)
+    return NextResponse.json({ error: '金流設定不完整', problems: configResult.problems }, { status: 500 })
+  }
 
-  // Find subscriptions expiring today or already expired but still active
+  const admin = createAdminClient()
   const today = new Date().toISOString().slice(0, 10)
-  const { data: expiring } = await admin
+  const { data: expiring, error } = await admin
     .from('subscriptions')
-    .select('*, users(id, phone, nickname, current_plan, next_plan), services(id, code, name, plans)')
+    .select('id, service_id, users(id, email, phone, nickname, current_plan, next_plan, deleted_at)')
     .eq('status', 'active')
     .lte('ends_at', today + 'T23:59:59Z')
-
-  if (!expiring || expiring.length === 0) {
-    return NextResponse.json({ message: 'No expiring subscriptions', charged: 0 })
+  if (error) {
+    console.error('[auto-charge] 查詢到期訂閱失敗', error.message)
+    return NextResponse.json({ error: '查詢失敗' }, { status: 500 })
   }
 
-  let charged = 0
-  let failed = 0
-
-  // PLAN_FULL_NAME 只給 orderInfo（金流閘道收據上人看的品名）用。
-  // ⚠️ 寫進 DB 的 plan_name 一律存「代碼」（free/basic/advanced/premium），
-  //    跟 initiate / callback 同一條規則 —— 這裡曾經把顯示名（'Premium'）寫進
-  //    payments / subscriptions，導致同一欄混存兩種值，後台對不到標籤、
-  //    對帳要靠 callback 的 legacyNameMap 硬翻。歷史資料不改寫（帳務憑證），
-  //    但新資料不准再混。
-  const CODE_TO_NAME = PLAN_FULL_NAME
-  const DEFAULT_LIMITS: Record<string, number> = {
-    basic: 50,
-    advanced: 100,
-    premium: 200,
-  }
-
-  for (const sub of expiring) {
-    const user = sub.users as { id: string; phone: string; nickname: string | null; current_plan: string; next_plan?: string | null } | null
-    if (!user) continue
-
-    const service = sub.services as { id: string; code: string; name: string; plans: unknown } | null
-
-    // Determine the plan to charge for (next_plan or current_plan)
-    const hasScheduledChange = user.next_plan && user.next_plan !== user.current_plan
-    const effectivePlanCode = hasScheduledChange ? user.next_plan! : user.current_plan
-    const effectivePlanName = CODE_TO_NAME[effectivePlanCode] ?? CODE_TO_NAME[user.current_plan] ?? '基本方案'
-
-    // 從 plans 表（code）取每月收費與對話次數
-    let chargeAmount = 0
-    let dialogLimit = DEFAULT_LIMITS[effectivePlanCode] ?? 30
-    const planRow = await getPlanByCode(effectivePlanCode)
-    if (planRow) {
-      chargeAmount = planRow.monthly_charge
-      dialogLimit = planRow.monthly_dialog_count
-    }
-
-    // Find the latest payment with tokenData for this user
-    const { data: lastPayment } = await admin
-      .from('payments')
-      .select('token_data, plan_name, amount')
-      .eq('user_id', user.id)
-      .eq('status', 'paid')
-      .not('token_data', 'is', null)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .single()
-
-    if (!lastPayment?.token_data) {
-      // No token — mark subscription as expired
-      await admin.from('subscriptions').update({ status: 'expired' }).eq('id', sub.id)
-      await admin.from('users').update({ current_plan: 'free', dialog_limit: 0, next_plan: null }).eq('id', user.id)
-      continue
-    }
-
-    // Use the looked-up price, fallback to last payment amount
-    if (chargeAmount <= 0) chargeAmount = lastPayment.amount
-
+  const counts: Record<ChargeOutcome, number> = { requested: 0, failed: 0, unknown: 0, skipped: 0, expired: 0 }
+  const twToday = todayInTaiwan()
+  for (const sub of (expiring ?? []) as unknown as ExpiringSub[]) {
     try {
-      // Decrypt token data
-      const tokenInfo = await decrypt(lastPayment.token_data) as {
-        paymentToken?: string
-        verificationCode?: string
-        tokenExpiryDate?: string
-      }
-
-      if (!tokenInfo.paymentToken) {
-        await admin.from('subscriptions').update({ status: 'expired' }).eq('id', sub.id)
-        await admin.from('users').update({ current_plan: 'free', dialog_limit: 0, next_plan: null }).eq('id', user.id)
-        continue
-      }
-
-      // Generate order number
-      const orderNo = `REC_${Date.now()}_${Math.floor(Math.random() * 1000)}`
-
-      // Execute payment with the effective plan's price
-      const gatewayResult = await executeTokenPayment({
-        paymentToken: tokenInfo.paymentToken,
-        verificationCode: tokenInfo.verificationCode ?? '',
-        tokenExpiryDate: tokenInfo.tokenExpiryDate ?? '',
-        userId: user.id,
-        price: chargeAmount,
-        orderNo,
-        orderInfo: `自動扣款 — ${effectivePlanName}${hasScheduledChange ? '（方案變更）' : ''}`,
-      })
-      // ⚠️ 既有行為：只要 executeTokenPayment 沒 throw 就當成功，回傳的 errcode
-      //    並未檢查（紅陽回失敗碼但 HTTP 200 時，訂閱仍會被展延）。
-      //    這是金流主線的判斷，A 案不動它 —— 只把 errcode 如實記進帳，
-      //    帳上看得到「成功處理但 errcode 非 00」的異常列。修正列入 Steve 金流規格書。
-      const gatewayErrcode =
-        typeof (gatewayResult as { errcode?: unknown })?.errcode === 'string'
-          ? ((gatewayResult as { errcode?: string }).errcode ?? null)
-          : null
-
-      // Extend subscription by 1 month
-      const newEndsAt = new Date(sub.ends_at)
-      newEndsAt.setMonth(newEndsAt.getMonth() + 1)
-
-      await admin.from('subscriptions').update({
-        ends_at: newEndsAt.toISOString(),
-        plan_name: effectivePlanCode, // 存代碼，同 callback 建訂閱那條路
-      }).eq('id', sub.id)
-
-      // Update user: apply plan change if scheduled, reset next_plan
-      await admin.from('users').update({
-        current_plan: effectivePlanCode,
-        dialog_limit: dialogLimit,
-        plan_deadline: newEndsAt.toISOString(),
-        next_plan: null, // Clear scheduled change after applying
-      }).eq('id', user.id)
-
-      // Record payment
-      const { data: paymentRow } = await admin.from('payments').insert({
-        user_id: user.id,
-        service_id: service?.id,
-        amount: chargeAmount,
-        plan_name: effectivePlanCode, // 存代碼，同 initiate 首次付款那條路
-        payment_uid: orderNo,
-        status: 'paid',
-        paid_at: new Date().toISOString(),
-      }).select('id').single()
-
-      // 金流帳務（migration 027）：月扣入帳。raw 由 ledger 端剔除敏感欄位。
-      await recordGatewayTx(admin, {
-        userId: user.id,
-        paymentId: paymentRow?.id ?? null,
-        txType: 'recurring',
-        amount: chargeAmount,
-        orderNo,
-        errcode: gatewayErrcode,
-        success: true,
-        raw: (gatewayResult ?? null) as Record<string, unknown> | null,
-      })
-
-      charged++
-    } catch (e) {
-      console.error('Auto-charge failed for user', user.id, e)
-      failed++
-
-      // 金流帳務：扣款失敗也留帳（以後查「為什麼這個人扣款失敗」不用翻 log）
-      await recordGatewayTx(admin, {
-        userId: user.id,
-        txType: 'recurring',
-        amount: chargeAmount,
-        errcode: null,
-        errmsg: e instanceof Error ? e.message.slice(0, 500) : String(e).slice(0, 500),
-        success: false,
-      })
-
-      // Mark as failed after 3 retries (check recent failures)
-      const { count } = await admin
-        .from('payments')
-        .select('id', { count: 'exact', head: true })
-        .eq('user_id', user.id)
-        .eq('status', 'failed')
-        .gte('created_at', new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString())
-
-      if ((count ?? 0) >= 2) {
-        await admin.from('subscriptions').update({ status: 'expired' }).eq('id', sub.id)
-        await admin.from('users').update({ current_plan: 'free', dialog_limit: 0, next_plan: null }).eq('id', user.id)
-      }
+      counts[await chargeOne(admin, configResult.config, sub, twToday)]++
+    } catch (err) {
+      console.error('[auto-charge] 處理訂閱時發生錯誤', { subId: sub.id, error: err instanceof Error ? err.message : err })
+      counts.failed++
     }
   }
 
-  return NextResponse.json({ message: 'Auto-charge complete', charged, failed })
+  return NextResponse.json({ message: 'Auto-charge complete', ...counts })
 }

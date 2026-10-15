@@ -8,6 +8,8 @@ import { Badge } from '@/components/ui/badge'
 import { CopyableId } from '@/components/ui/copyable-id'
 import { GENDER_OPTIONS, genderLabel } from '@/lib/user-fields'
 import { PLAN_CODES, PLAN_LABEL } from '@/lib/plans'
+import { MAX_GRANT_AMOUNT } from '@/lib/dialog-grant'
+import type { DialogQuota } from '@/lib/queries/dialog-quota'
 
 interface User {
   id: string
@@ -18,7 +20,8 @@ interface User {
   birthday: string | null
   role: string
   current_plan: string
-  dialog_limit: number
+  /** 本期 AI 對話額度（新制）；讀不到時為 null */
+  quota: DialogQuota | null
   plan_deadline: string | null
   created_at: string
 }
@@ -37,6 +40,11 @@ const ROLE_CONFIG: Record<string, { label: string; color: string; icon: typeof S
 }
 
 const PLAN_LABELS = PLAN_LABEL
+
+/** 表格與 CSV 共用：「3／50」；讀不到顯示 '-' */
+function quotaText(q: DialogQuota | null): string {
+  return q ? `${q.used}／${q.limit}` : '-'
+}
 
 export function UserTable({
   users: initialUsers,
@@ -60,7 +68,8 @@ export function UserTable({
   const [editGender, setEditGender] = useState('')
   const [editBirthday, setEditBirthday] = useState('')
   const [editPlan, setEditPlan] = useState('')
-  const [editDialogLimit, setEditDialogLimit] = useState('')
+  const [grantAmount, setGrantAmount] = useState('')
+  const [grantReason, setGrantReason] = useState('')
   const [editDeadline, setEditDeadline] = useState('')
 
   const isSuperAdmin = currentUserRole === 'superadmin'
@@ -83,7 +92,8 @@ export function UserTable({
     setEditGender(user.gender != null ? String(user.gender) : '')
     setEditBirthday(user.birthday ? user.birthday.slice(0, 10) : '')
     setEditPlan(user.current_plan)
-    setEditDialogLimit(String(user.dialog_limit))
+    setGrantAmount('')
+    setGrantReason('')
     setEditDeadline(user.plan_deadline ? user.plan_deadline.slice(0, 10) : '')
     setSaveMsg(null)
   }
@@ -98,6 +108,25 @@ export function UserTable({
     setSaving(true)
     setSaveMsg(null)
     try {
+      // 本期補發另走一支 API（寫 ai_dialog_grants，不是改 users）。
+      // 先補發：失敗就整個停下，不會出現「資料存了、補發沒成功卻顯示已儲存」。
+      let newQuota = editingUser.quota
+      if (grantAmount.trim() !== '') {
+        const grantRes = await fetch(`/api/manage/users/${editingUser.id}/grants`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ amount: grantAmount, reason: grantReason }),
+        })
+        const grantJson = await grantRes.json()
+        if (!grantRes.ok) {
+          setSaveMsg({ type: 'error', text: grantJson.error || '補發失敗' })
+          return
+        }
+        newQuota = grantJson.quota ?? newQuota
+        setGrantAmount('')
+        setGrantReason('')
+      }
+
       const res = await fetch('/api/manage/users', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -111,7 +140,6 @@ export function UserTable({
           gender: editGender === '' ? null : Number(editGender),
           birthday: editBirthday || null,
           current_plan: editPlan,
-          dialog_limit: Number(editDialogLimit),
           plan_deadline: editDeadline || null,
         }),
       })
@@ -132,7 +160,7 @@ export function UserTable({
                   gender: editGender === '' ? null : Number(editGender),
                   birthday: editBirthday || null,
                   current_plan: editPlan,
-                  dialog_limit: Number(editDialogLimit),
+                  quota: newQuota,
                   plan_deadline: editDeadline || null,
                 }
               : u
@@ -148,7 +176,7 @@ export function UserTable({
   }
 
   function handleExport() {
-    const headers = ['用戶名稱', 'NUWA ID', '手機', 'Email', '性別', '生日', '角色', '方案', '對話次數', '到期日', '註冊時間']
+    const headers = ['用戶名稱', 'NUWA ID', '手機', 'Email', '性別', '生日', '角色', '方案', '本期已用／上限', '本期重置日', '到期日', '註冊時間']
     const rows = filtered.map((u) => [
       u.nickname ?? '',
       u.id,
@@ -158,7 +186,8 @@ export function UserTable({
       u.birthday ? u.birthday.slice(0, 10) : '',
       ROLE_CONFIG[u.role]?.label ?? u.role,
       PLAN_LABELS[u.current_plan] ?? u.current_plan,
-      String(u.dialog_limit),
+      quotaText(u.quota),
+      u.quota?.nextResetLabel ?? '',
       u.plan_deadline ? new Date(u.plan_deadline).toLocaleDateString('zh-TW') : '',
       new Date(u.created_at).toLocaleDateString('zh-TW'),
     ])
@@ -216,7 +245,7 @@ export function UserTable({
               <th className="px-5 py-3">手機</th>
               <th className="px-5 py-3">角色</th>
               <th className="px-5 py-3">方案</th>
-              <th className="px-5 py-3">對話次數</th>
+              <th className="px-5 py-3" title="各 App 共用；上限 = 方案次數 + 本期補發">本期 AI 對話</th>
               <th className="px-5 py-3">到期日</th>
               <th className="px-5 py-3">註冊時間</th>
               <th className="px-5 py-3">操作</th>
@@ -250,7 +279,12 @@ export function UserTable({
                       {PLAN_LABELS[u.current_plan] ?? u.current_plan}
                     </Badge>
                   </td>
-                  <td className="px-5 py-4 text-fg-secondary">{u.dialog_limit}</td>
+                  <td className="px-5 py-4 text-fg-secondary">
+                    <span className="tabular-nums">{quotaText(u.quota)}</span>
+                    {u.quota && (
+                      <span className="block text-xs text-fg-muted">{u.quota.nextResetLabel} 重置</span>
+                    )}
+                  </td>
                   <td className="px-5 py-4 text-fg-secondary">
                     {u.plan_deadline ? new Date(u.plan_deadline).toLocaleDateString('zh-TW') : '-'}
                   </td>
@@ -386,9 +420,8 @@ export function UserTable({
                 </div>
               </div>
 
-              {/* Plan + Dialog Limit */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
+              {/* Plan */}
+              <div className="space-y-2">
                   <label className="text-sm font-medium text-fg-primary">方案</label>
                   <select
                     value={editPlan}
@@ -399,13 +432,34 @@ export function UserTable({
                       <option key={c} value={c}>{PLAN_LABEL[c]}</option>
                     ))}
                   </select>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-fg-primary">對話次數</label>
+              </div>
+
+              {/* 本期補發（新制）—— 取代舊的「對話點數」 */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-fg-primary">本期補發 AI 對話</label>
+                <p className="text-xs text-fg-muted">
+                  目前本期已用 {quotaText(editingUser.quota)}
+                  {editingUser.quota && `・${editingUser.quota.nextResetLabel} 重置`}。
+                  補發只加在這一期，下期重置後不延續。
+                </p>
+                <div className="grid grid-cols-[7rem_1fr] gap-3">
                   <Input
                     type="number"
-                    value={editDialogLimit}
-                    onChange={(e) => setEditDialogLimit(e.target.value)}
+                    min={1}
+                    max={MAX_GRANT_AMOUNT}
+                    step={1}
+                    value={grantAmount}
+                    onChange={(e) => setGrantAmount(e.target.value)}
+                    placeholder="次數"
+                    aria-label="補發次數"
+                    className="h-10 rounded-xl"
+                  />
+                  <Input
+                    value={grantReason}
+                    onChange={(e) => setGrantReason(e.target.value)}
+                    placeholder="原因（必填，例如：系統異常補償）"
+                    aria-label="補發原因"
+                    maxLength={200}
                     className="h-10 rounded-xl"
                   />
                 </div>
