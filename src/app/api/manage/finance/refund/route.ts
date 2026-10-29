@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getAdminCtx } from '@/lib/app-access'
 import { logAudit } from '@/lib/audit'
-import { recordGatewayTx } from '@/lib/esafe/ledger'
+import { recordGatewayTx } from '@/lib/gateway-ledger'
 
 // 標記退款（金流帳務 A 案）
 // POST /api/manage/finance/refund  body: { payment_id, note? }

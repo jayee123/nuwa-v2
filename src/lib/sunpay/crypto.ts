@@ -41,16 +41,15 @@ export function toPem(key: string): string {
   return `-----BEGIN PUBLIC KEY-----\n${lines.join('\n')}\n-----END PUBLIC KEY-----`
 }
 
-/** 依 ASCII 升序遞迴排序 key（body 在 head 前，因 'b' < 'h'） */
-function sortByAscii(obj: Record<string, unknown>): Record<string, unknown> {
+/** 依 ASCII 升序遞迴排序 key（body 在 head 前，因 'b' < 'h'）；陣列保留順序，只排序裡面每個物件的 key */
+function sortByAscii(val: unknown): unknown {
+  if (Array.isArray(val)) return val.map(sortByAscii)
+  if (val === null || typeof val !== 'object') return val
+  const obj = val as Record<string, unknown>
   return Object.fromEntries(
     Object.keys(obj)
       .sort()
-      .map((key) => {
-        const val = obj[key]
-        const isPlainObject = val !== null && typeof val === 'object' && !Array.isArray(val)
-        return [key, isPlainObject ? sortByAscii(val as Record<string, unknown>) : val]
-      }),
+      .map((key) => [key, sortByAscii(obj[key])]),
   )
 }
 
@@ -125,10 +124,15 @@ export function genSendTime(now: Date = new Date()): string {
   )
 }
 
+/**
+ * 送給紅陽的 body：付款是物件；即時交易查詢是陣列（[{ td }]，一般金流手冊 V1.1.1 §4.4.1）
+ */
+export type SignedBody = Record<string, string> | Record<string, string>[]
+
 /** 把 body 包成可 POST 給紅陽的 { web, send_time, rsamsg, check_value } */
 export function buildSignedRequest(
   keys: SunpaySigningKeys,
-  body: Record<string, string>,
+  body: SignedBody,
   now: Date = new Date(),
 ): SignedRequest {
   const sendTime = genSendTime(now)
@@ -165,6 +169,20 @@ export interface ParsedNotify {
   /** check_value 是否相符（第二道；解得開本身已證明來自紅陽） */
   isCheckValueValid: boolean
   body: NotifyBody
+}
+
+export type NotifyVerification =
+  | { ok: true }
+  | { ok: false; reason: 'merchant_mismatch' | 'check_value_mismatch' }
+
+/**
+ * 通知要入帳前的兩道檢查：特店代號、check_value 都要對。
+ * check_value 原本只記 log（演算法未經正式交易確認）；2026-10-15 第一筆正式交易驗證相符後改為擋下（PAY-11）。
+ */
+export function verifyNotify(parsed: ParsedNotify): NotifyVerification {
+  if (!parsed.isOurMerchant) return { ok: false, reason: 'merchant_mismatch' }
+  if (!parsed.isCheckValueValid) return { ok: false, reason: 'check_value_mismatch' }
+  return { ok: true }
 }
 
 /** 解開並驗證通知。解不開（不是紅陽私鑰產的、或格式壞掉）直接 throw。 */

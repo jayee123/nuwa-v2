@@ -24,6 +24,7 @@ const STATUS_MAP: Record<string, { label: string; color: string }> = {
   paid: { label: '已付款', color: 'bg-brand-teal' },
   pending: { label: '待付款', color: 'bg-brand-orange' },
   failed: { label: '失敗', color: 'bg-destructive' },
+  cancelled: { label: '已取消', color: 'bg-fg-muted' },
   refunded: { label: '已退款', color: 'bg-fg-muted' },
 }
 

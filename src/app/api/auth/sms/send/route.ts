@@ -4,6 +4,10 @@ import { sendSms } from '@/lib/sms/milkidea'
 import { isValidPhone, normalizeLocalPhone } from '@/lib/phone'
 import { getSecretParam } from '@/lib/secret-params'
 
+// 註冊、忘記密碼的驗證碼有效時間。原本 5 分鐘，10/18 電信延遲讓碼送到前就過期，
+// 跟管理員驗證碼一起改 10 分鐘（lib/admin-otp.ts，Jeff 10/19 定）
+const SMS_CODE_TTL_MS = 10 * 60 * 1000
+
 export async function POST(request: Request) {
   const { phone: rawPhone, countryCode } = await request.json()
 
@@ -53,7 +57,7 @@ export async function POST(request: Request) {
   await supabase.from('sms_verifications').insert({
     phone,
     code,
-    expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+    expires_at: new Date(Date.now() + SMS_CODE_TTL_MS).toISOString(),
     verified: false,
   })
 

@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { getAdminCtx } from '@/lib/app-access'
 import { TrialsTable, type TrialTableRow } from '@/components/manage/trials-table'
+import { isTrialActive, trialFromRow } from '@/lib/launch-gate'
 
 export const metadata: Metadata = { title: '試用紀錄 — 羽升管理後台' }
 export const dynamic = 'force-dynamic'
@@ -13,6 +14,8 @@ interface TrialRow {
   id: string
   started_at: string
   expires_at: string
+  dialogs_used: number | null
+  dialog_limit: number | null
   source: string
   invite_code: string | null
   users: { nickname: string | null; email: string | null; phone: string | null } | null
@@ -27,7 +30,7 @@ export default async function ManageTrialsPage() {
 
   const { data } = await ctx.admin
     .from('user_app_trials')
-    .select('id, started_at, expires_at, source, invite_code, users(nickname, email, phone), apps(name, slug)')
+    .select('id, started_at, expires_at, dialogs_used, dialog_limit, source, invite_code, users(nickname, email, phone), apps(name, slug)')
     .order('expires_at', { ascending: true })
 
   const raw = (data ?? []) as unknown as TrialRow[]
@@ -36,19 +39,22 @@ export default async function ManageTrialsPage() {
     id: r.id,
     started_at: r.started_at,
     expires_at: r.expires_at,
+    dialogs_used: r.dialogs_used ?? 0,
+    dialog_limit: r.dialog_limit ?? null,
     source: r.source,
     invite_code: r.invite_code,
     userName: r.users?.nickname ?? '—',
     userContact: r.users?.email ?? r.users?.phone ?? '',
     appName: r.apps?.name ?? r.apps?.slug ?? '—',
   }))
-  const activeCount = rows.filter((r) => new Date(r.expires_at) > now).length
+  // 天數或次數先到者結束（M-12）
+  const activeCount = rows.filter((r) => isTrialActive(trialFromRow(r), now)).length
 
   return (
     <div>
       <h1 className="font-heading text-2xl font-bold text-fg-primary">試用紀錄</h1>
       <p className="mt-2 text-sm text-fg-secondary">
-        誰在試用哪支 App、還剩幾天。「誰還沒兌換」請看邀請碼頁的未使用碼。
+        誰在試用哪支 App、還剩幾天、用了幾次對話。「誰還沒兌換」請看邀請碼頁的未使用碼。
       </p>
 
       <div className="mt-6 flex gap-3">
@@ -56,7 +62,7 @@ export default async function ManageTrialsPage() {
           試用中 <span className="ml-1 text-lg font-bold text-green-700">{activeCount}</span>
         </div>
         <div className="rounded-xl bg-gray-100 px-5 py-3 text-sm">
-          已到期 <span className="ml-1 text-lg font-bold text-gray-600">{rows.length - activeCount}</span>
+          已結束 <span className="ml-1 text-lg font-bold text-gray-600">{rows.length - activeCount}</span>
         </div>
       </div>
 

@@ -48,6 +48,9 @@ export default async function PaymentSuccessPage({
     }
   }
 
+  // 定價相同的升級（PAY-20）：NT$0、沒有經過金流，不能寫「付款成功」
+  const isFreeUpgrade = payment?.amount === 0
+
   return (
     <div className="w-full">
       <main className="flex items-center justify-center px-4 py-12">
@@ -60,11 +63,13 @@ export default async function PaymentSuccessPage({
           </div>
 
           <h1 className="mt-6 font-heading text-2xl font-bold text-fg-primary">
-            {payment ? '付款成功！' : '還沒有收到付款結果'}
+            {payment ? (isFreeUpgrade ? '升級完成！' : '付款成功！') : '還沒有收到付款結果'}
           </h1>
           <p className="mt-2 text-sm text-fg-secondary">
             {payment
-              ? '感謝您的訂閱，現在就開始學習吧'
+              ? isFreeUpgrade
+                ? '新方案與原方案價格相同，這次不收費，到期日不變'
+                : '感謝您的訂閱，現在就開始學習吧'
               : '如果剛付完款，請稍等幾秒後重新整理；仍未更新請聯絡客服。'}
           </p>
 

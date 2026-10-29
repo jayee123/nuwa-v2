@@ -2,13 +2,14 @@
  * 訂單編號與送給紅陽的消費者欄位整理（純函式）。
  *
  * 訂單編號（td）：手冊規定英數、不可重複、≤ 50 碼。
- * 前綴區分首次付款與月扣 —— 通知只帶 td，靠前綴決定要「開新訂閱」還是「展延」。
+ * 前綴區分首次付款、升級與月扣 —— 通知只帶 td，靠前綴決定要「開新訂閱」「改方案」還是「展延」。
  */
 import { randomInt } from 'crypto'
 
-export type OrderKind = 'first' | 'recurring'
+/** first 首次付款／重訂、upgrade 升級補差價（PAY-20）、recurring 月扣 */
+export type OrderKind = 'first' | 'upgrade' | 'recurring'
 
-const ORDER_PREFIX: Record<OrderKind, string> = { first: 'V3F', recurring: 'V3R' }
+const ORDER_PREFIX: Record<OrderKind, string> = { first: 'V3F', upgrade: 'V3U', recurring: 'V3R' }
 const SUFFIX_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const SUFFIX_LENGTH = 6
 const TW_OFFSET_MS = 8 * 3600 * 1000
@@ -35,8 +36,22 @@ export function generateOrderNo(kind: OrderKind, now: Date = new Date()): string
 /** 從訂單編號判斷種類；不是新版編號回 null（例如舊 esafe 的 V2…） */
 export function orderKindOf(td: string): OrderKind | null {
   if (td.startsWith(ORDER_PREFIX.first)) return 'first'
+  if (td.startsWith(ORDER_PREFIX.upgrade)) return 'upgrade'
   if (td.startsWith(ORDER_PREFIX.recurring)) return 'recurring'
   return null
+}
+
+/**
+ * 首次付款的卡片識別碼（save_card_token）= 這筆付款的 id，每次結帳一組新的。
+ *
+ * 以前固定用會員 id：同一組 token 在紅陽綁過卡後，再走首次付款紅陽就回 96
+ * 「未傳 TokenKey 值」—— 升級、到期重訂、退款後重訂全部付不了（PAY-15，2026-10-16）。
+ * 手冊：≤ 36 碼、只能英數與 . _ @ -；uuid 剛好 36 碼。
+ * 通知不會帶回這個值，入帳時用同一個函式從付款 id 算回來，兩邊一定一致。
+ * 月扣用「最近一筆付款成功、有卡片代碼」的那組（見 auto-charge 的 latestStoredToken）。
+ */
+export function cardTokenOf(paymentId: string): string {
+  return paymentId
 }
 
 /** 姓名：手冊禁特殊字元（* ' < > [ ] " 等），只留文字、數字、空白，≤ 30 字 */

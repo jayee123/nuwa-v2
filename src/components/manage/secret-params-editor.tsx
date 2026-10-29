@@ -33,18 +33,6 @@ const CATEGORIES: { title: string; keys: string[] }[] = [
     ],
   },
   {
-    title: 'esafe 金流（舊版，停用中）',
-    keys: [
-      'ESAFE_MERCHANT_ID',
-      'ESAFE_PASSWORD',
-      'ESAFE_ENC_KEY',
-      'ESAFE_ENC_IV',
-      'ESAFE_BIND_URL',
-      'ESAFE_PASSCODE_URL',
-      'ESAFE_TRANS_URL',
-    ],
-  },
-  {
     title: 'Email & 簡訊',
     keys: ['RESEND_API_KEY', 'SMS_API_KEY', 'SMS_TEST_MODE'],
   },
@@ -112,7 +100,8 @@ export function SecretParamsEditor() {
       const data = await (await fetch('/api/manage/secrets')).json()
       setParams(data.params ?? [])
     } else {
-      setMsg('儲存失敗')
+      const data = await res.json().catch(() => null)
+      setMsg(data?.error ?? '儲存失敗')
     }
   }
 

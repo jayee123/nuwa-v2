@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { getAdminCtx } from '@/lib/app-access'
 import { monthlyRevenue, type LedgerRow } from '@/lib/finance-stats'
 import { FinanceLedger, type LedgerTableRow } from '@/components/manage/finance-ledger'
+import { refundCheckBadge, refundCheckOf } from '@/lib/sunpay/refund-check'
 
 export const metadata: Metadata = { title: '金流帳務 — 羽升管理後台' }
 export const dynamic = 'force-dynamic'
@@ -27,6 +28,7 @@ interface RawTx {
   errcode: string | null
   success: boolean
   note: string | null
+  raw: Record<string, unknown> | null
   created_at: string
 }
 
@@ -36,7 +38,7 @@ export default async function ManageFinancePage() {
 
   const { data, error } = await ctx.admin
     .from('gateway_transactions')
-    .select('id, user_id, payment_id, tx_type, amount, order_no, gateway_no, errcode, success, note, created_at')
+    .select('id, user_id, payment_id, tx_type, amount, order_no, gateway_no, errcode, success, note, raw, created_at')
     .order('created_at', { ascending: false })
     .limit(500)
 
@@ -82,6 +84,9 @@ export default async function ManageFinancePage() {
     errcode: t.errcode ?? '',
     success: t.success,
     note: t.note ?? '',
+    // 新版單的退款：顯示對帳排程從紅陽查回來的退款狀態（BIL-3 後半）；舊 esafe 單查不到，不顯示
+    refundCheck:
+      t.tx_type === 'refund' && t.order_no?.startsWith('V3') ? refundCheckBadge(refundCheckOf(t.raw)) : null,
     refundablePaymentId:
       t.success && t.tx_type !== 'refund' && t.payment_id && paidSet.has(t.payment_id) ? t.payment_id : null,
   }))

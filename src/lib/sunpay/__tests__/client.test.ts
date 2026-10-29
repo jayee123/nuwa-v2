@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from 'crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { isOutcomeUnknown, requestFirstPayment, requestSubsequentPayment } from '../client'
-import { SUNPAY_TRADE_URLS, type SunpayConfig } from '../config'
+import { isOutcomeUnknown, queryPayment, requestFirstPayment, requestSubsequentPayment } from '../client'
+import { SUNPAY_QUERY_URLS, SUNPAY_TRADE_URLS, type SunpayConfig } from '../config'
 
 const { publicKey } = generateKeyPairSync('rsa', {
   modulusLength: 1024,
@@ -107,5 +107,62 @@ describe('requestSubsequentPayment', () => {
   it('S-PAY-07 查無 token（95）：ok=false', async () => {
     mockFetch({ body: JSON.stringify({ code: '95', msg: '查無 token 或 token_key' }) })
     expect(await requestSubsequentPayment(baseConfig, nextInput)).toMatchObject({ ok: false, code: '95' })
+  })
+})
+
+describe('queryPayment（即時交易查詢）', () => {
+  const row = {
+    code: '00',
+    error_msg: '',
+    currency: 'TWD',
+    mn: '5',
+    trade_no: 'C1',
+    td: 'V3F1',
+    pay_result: '10',
+    pay_date: '20261016',
+    pay_time: '21:40',
+    card_no: '493817******8994',
+    approve_code: 'A1',
+    refund_status: '0',
+    refund_amt: '5',
+    installment: null,
+  }
+
+  it('經轉送站打 /v4/query/PaymentCheck，回傳對到訂單編號的那筆', async () => {
+    const fetchMock = mockFetch({ body: JSON.stringify({ code: '00', msg: '請求成功', result: [row] }) })
+    const result = await queryPayment(baseConfig, 'V3F1')
+
+    expect(result).toMatchObject({ ok: true, item: { td: 'V3F1', pay_result: '10', mn: '5', trade_no: 'C1', refund_status: '0', refund_amt: '5' } })
+    const [url] = fetchMock.mock.calls[0] as unknown as [string]
+    expect(url).toBe('https://relay.example.com/v4/query/PaymentCheck')
+  })
+
+  it('不收卡號（不進帳務、不進 log）', async () => {
+    mockFetch({ body: JSON.stringify({ code: '00', result: [row] }) })
+    const result = await queryPayment(baseConfig, 'V3F1')
+    if (!result.ok || !result.item) throw new Error('應該查得到')
+    expect(Object.keys(result.item)).not.toContain('card_no')
+  })
+
+  it('沒設轉送站就直連紅陽的查詢網址', async () => {
+    const fetchMock = mockFetch({ body: JSON.stringify({ code: '00', result: [] }) })
+    await queryPayment({ ...baseConfig, relayUrl: '', relaySecret: '' }, 'V3F1')
+    const [url] = fetchMock.mock.calls[0] as unknown as [string]
+    expect(url).toBe(SUNPAY_QUERY_URLS.production)
+  })
+
+  it('回應裡沒有這張單：item=null', async () => {
+    mockFetch({ body: JSON.stringify({ code: '00', result: [{ ...row, td: 'OTHER' }] }) })
+    expect(await queryPayment(baseConfig, 'V3F1')).toEqual({ ok: true, item: null })
+  })
+
+  it('外層 code 不是 00：ok=false 並帶回代碼', async () => {
+    mockFetch({ body: JSON.stringify({ code: '99', msg: '未知錯誤' }) })
+    expect(await queryPayment(baseConfig, 'V3F1')).toMatchObject({ ok: false, code: '99' })
+  })
+
+  it('連線失敗：NETWORK', async () => {
+    mockFetch({ status: 502, body: 'bad gateway' })
+    expect(await queryPayment(baseConfig, 'V3F1')).toMatchObject({ ok: false, code: 'NETWORK' })
   })
 })

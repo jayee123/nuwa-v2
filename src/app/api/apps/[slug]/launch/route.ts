@@ -4,7 +4,8 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { isAdminRole } from '@/lib/roles'
 import { isPlanCode, meetsRequiredPlan } from '@/lib/plans'
-import { decideLaunch, isTrialGrantedEntry, type LaunchDecision } from '@/lib/launch-gate'
+import { decideLaunch, isTrialGrantedEntry, resolveTrialTerms, trialFromRow, type LaunchDecision, type TrialState } from '@/lib/launch-gate'
+import { getTrialDefaults } from '@/lib/trial-defaults'
 
 // Market → App SSO 簽發（token handoff）
 // GET /api/apps/:slug/launch
@@ -44,7 +45,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ slug
   const admin = createAdminClient()
   const { data: app } = await admin
     .from('apps')
-    .select('id, slug, name, app_url, admin_url, sso_secret, required_plan, status, trial_days')
+    .select('id, slug, name, app_url, admin_url, sso_secret, required_plan, status, trial_days, trial_dialog_limit')
     .eq('slug', slug)
     .maybeSingle()
 
@@ -103,7 +104,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ slug
     // 試用紀錄讀不到（migration 025 未跑 / DB 異常）→ fail closed，不能 500 也不能放行
     const { data: trialRow, error: trialError } = await admin
       .from('user_app_trials')
-      .select('expires_at')
+      .select('expires_at, dialogs_used, dialog_limit')
       .eq('user_id', user.id)
       .eq('app_id', app.id)
       .maybeSingle()
@@ -112,17 +113,17 @@ export async function GET(request: Request, { params }: { params: Promise<{ slug
       return NextResponse.redirect(new URL('/dashboard/apps?error=app_unavailable', request.url))
     }
 
+    // 試用條件 = App 覆寫 + 公版預設（A 方案，migration 035）；次數快照由 DB trigger 用同一規則抄
+    const terms = resolveTrialTerms(app, await getTrialDefaults(admin))
     const gateInput = {
       status: app.status,
       planMeets,
-      trialDays: typeof app.trial_days === 'number' ? app.trial_days : 0,
+      trialDays: terms.days,
       now: new Date(),
     }
-    let trialExpiry: Date | null = trialRow ? new Date(trialRow.expires_at) : null
-    let decision: LaunchDecision = decideLaunch({
-      ...gateInput,
-      trial: trialExpiry ? { expiresAt: trialExpiry } : null,
-    })
+    // 試用＝天數或對話次數先到者結束（M-12）；次數由私版扣次時在 consume_dialog 累加
+    let trial: TrialState | null = trialFromRow(trialRow)
+    let decision: LaunchDecision = decideLaunch({ ...gateInput, trial })
 
     if (decision.kind === 'create_trial_and_enter') {
       // open 試用就地建立（source='open'，invite_code 必為 NULL —— DB CHECK 擋半套）
@@ -138,20 +139,17 @@ export async function GET(request: Request, { params }: { params: Promise<{ slug
         // 重讀對方剛建好的紀錄再判斷一次（必定未到期 → enter），不回錯誤給使用者。
         const { data: raced } = await admin
           .from('user_app_trials')
-          .select('expires_at')
+          .select('expires_at, dialogs_used, dialog_limit')
           .eq('user_id', user.id)
           .eq('app_id', app.id)
           .maybeSingle()
-        trialExpiry = raced ? new Date(raced.expires_at) : null
-        decision = decideLaunch({
-          ...gateInput,
-          trial: trialExpiry ? { expiresAt: trialExpiry } : null,
-        })
+        trial = trialFromRow(raced)
+        decision = decideLaunch({ ...gateInput, trial })
       } else if (insertError) {
         console.error('[launch] 建立 open 試用失敗:', insertError.message)
         return NextResponse.redirect(new URL('/dashboard/apps?error=app_unavailable', request.url))
       } else {
-        trialExpiry = expiresAt
+        trial = { expiresAt }
         decision = { kind: 'enter' }
       }
     }
@@ -162,8 +160,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ slug
     // 「憑試用」的判斷在 isTrialGrantedEntry：internal 一律是（封測不看方案），
     // active 才看方案達標與否 —— 別再用 !planMeets 當條件，required_plan
     // 「不限」的 App 會讓它恆 false（2026-09-10 實測抓到的洞）。
-    if (trialExpiry && isTrialGrantedEntry(app.status, planMeets)) {
-      accessUntilSec = Math.floor(trialExpiry.getTime() / 1000)
+    if (trial && isTrialGrantedEntry(app.status, planMeets)) {
+      accessUntilSec = Math.floor(trial.expiresAt.getTime() / 1000)
     }
 
     if (decision.kind === 'need_invite') {

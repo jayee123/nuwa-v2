@@ -1,3 +1,5 @@
+import { getSecretParam } from '@/lib/secret-params'
+
 /**
  * src/lib/email.ts
  *
@@ -26,3 +28,30 @@ export const MAIL_FROM = '羽升幸福養成學苑 <noreply@chg2asc.com>'
 
 /** Resend API endpoint */
 export const RESEND_ENDPOINT = 'https://api.resend.com/emails'
+
+/**
+ * 寄一封信。沒設定 RESEND_API_KEY、連不上或 Resend 回錯誤就 throw，
+ * 由呼叫端決定要不要擋流程（例如管理員 Email 驗證碼寄不出去就要讓使用者知道）。
+ */
+export async function sendEmail({ to, subject, html }: { to: string; subject: string; html: string }): Promise<void> {
+  const apiKey = (await getSecretParam('RESEND_API_KEY')).trim()
+  if (!apiKey) {
+    console.error('[email] RESEND_API_KEY 未設定（後台 系統設定 → Email & 簡訊），信不寄')
+    throw new Error('Email 服務尚未設定，請聯絡客服。')
+  }
+  let response: Response
+  try {
+    response = await fetch(RESEND_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({ from: MAIL_FROM, to, subject, html }),
+    })
+  } catch (e) {
+    console.error('[email] Resend 連線失敗:', e instanceof Error ? e.message : e)
+    throw new Error('Email 寄送失敗，請稍後再試。')
+  }
+  if (!response.ok) {
+    console.error('[email] Resend 回錯誤:', response.status, (await response.text()).slice(0, 300))
+    throw new Error('Email 寄送失敗，請稍後再試。')
+  }
+}

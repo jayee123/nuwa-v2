@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { getAdminCtx, getAccessibleAppIds } from '@/lib/app-access'
 import { AppsManager } from '@/components/manage/apps-manager'
+import { getTrialDefaults } from '@/lib/trial-defaults'
 
 export const metadata: Metadata = { title: 'App 管理 — 羽升管理後台' }
 export const dynamic = 'force-dynamic'
@@ -16,10 +17,12 @@ export default async function ManageAppsPage() {
   }
 
   const accessible = await getAccessibleAppIds(ctx) // null = 全部（superadmin）
+  // App 試用欄位留空 = 用公版預設；編輯畫面要讓人看得到預設是多少
+  const trialDefaults = await getTrialDefaults(ctx.admin)
   if (accessible !== null && accessible.length === 0) {
     return (
       <div>
-        <AppsManager initialApps={[]} isSuper={false} />
+        <AppsManager initialApps={[]} isSuper={false} trialDefaults={trialDefaults} />
       </div>
     )
   }
@@ -47,7 +50,7 @@ export default async function ManageAppsPage() {
 
   return (
     <div>
-      <AppsManager initialApps={apps} isSuper={ctx.isSuper} />
+      <AppsManager initialApps={apps} isSuper={ctx.isSuper} trialDefaults={trialDefaults} />
     </div>
   )
 }

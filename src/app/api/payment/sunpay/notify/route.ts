@@ -1,6 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/admin'
 import { getSunpayConfig } from '@/lib/sunpay/config'
-import { parseNotify, type ParsedNotify } from '@/lib/sunpay/crypto'
+import { parseNotify, verifyNotify, type ParsedNotify } from '@/lib/sunpay/crypto'
 import { decideNotify, settleNotify, type PendingPayment } from '@/lib/sunpay/settle'
 
 // 紅陽 SunPay v3「交易結果通知網址」（後台：系統設定／開發者專區／特店 URL 設定）。
@@ -9,7 +9,7 @@ import { decideNotify, settleNotify, type PendingPayment } from '@/lib/sunpay/se
 //
 // 回應規則：
 //   success → 已處理或不需處理（重複通知、不是我們的新版訂單）
-//   400     → 內容有問題、先不動帳（解不開、不是我們的特店、金額不符），紅陽會補發
+//   400     → 內容有問題、先不動帳（解不開、不是我們的特店、check_value 不符、金額不符），紅陽會補發
 //   500     → 我們這邊暫時出錯（設定缺漏、DB 失敗），紅陽補發時重來
 
 const SUCCESS = 'success'
@@ -55,13 +55,11 @@ export async function POST(request: Request) {
     console.error('[sunpay/notify] rsamsg 解不開', err instanceof Error ? err.message : err)
     return plain('FAIL', 400)
   }
-  if (!parsed.isOurMerchant) {
-    console.error('[sunpay/notify] 特店代號不符')
+  const verified = verifyNotify(parsed)
+  if (!verified.ok) {
+    // 特店不符或 check_value 不符：不動帳。真的是紅陽的通知時，紅陽會補發，log 留著可人工查
+    console.error('[sunpay/notify] 驗證不通過', { reason: verified.reason, td: parsed.body.td })
     return plain('FAIL', 400)
-  }
-  if (!parsed.isCheckValueValid) {
-    // 解得開已證明來自紅陽；check_value 不符先記下來，第一筆正式交易時確認演算法
-    console.warn('[sunpay/notify] check_value 不符（rsamsg 已驗證來自紅陽，繼續處理）', { td: parsed.body.td })
   }
 
   const body = parsed.body

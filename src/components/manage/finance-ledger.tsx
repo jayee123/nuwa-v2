@@ -2,9 +2,13 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import type { RefundCheckBadge } from '@/lib/sunpay/refund-check'
 
 // 金流帳務明細（A 案）：與紅陽往來的原始交易帳 + 標記退款。
 // 「標記退款」不向紅陽發起任何請求 —— 先在紅陽商家後台人工退款，再回這裡標記。
+
+// 成功列的代碼本來就是這些，不必再標 ⚠️：舊 esafe 回 00／00000，紅陽 v3 通知的 pay_result 成功是 10（PAY-16）
+const SUCCESS_CODES = new Set(['00', '00000', '10'])
 
 export interface LedgerTableRow {
   id: string
@@ -18,6 +22,8 @@ export interface LedgerTableRow {
   errcode: string
   success: boolean
   note: string
+  /** 退款列：紅陽那邊實際退了沒（對帳排程查回來的）；其他列為 null */
+  refundCheck: RefundCheckBadge | null
   /** 可標記退款的 payments.id（成功收款且該筆 payment 仍為 paid 時才有值） */
   refundablePaymentId: string | null
 }
@@ -121,10 +127,26 @@ export function FinanceLedger({ rows }: { rows: LedgerTableRow[] }) {
                     {r.gatewayNo && <div className="text-fg-muted">{r.gatewayNo}</div>}
                   </td>
                   <td className="px-4 py-3 text-xs">
-                    {r.success ? (
-                      <span className="text-green-700">成功{r.errcode && r.errcode !== '00' && r.errcode !== '00000' ? `（errcode ${r.errcode}⚠️）` : ''}</span>
+                    {r.txType === 'refund' ? (
+                      // 退款列的「成功」只代表後台標記了，紅陽實際退了沒看下面那一行
+                      <span className="text-fg-secondary">已標記</span>
+                    ) : r.success ? (
+                      <span className="text-green-700">成功{r.errcode && !SUCCESS_CODES.has(r.errcode) ? `（errcode ${r.errcode}⚠️）` : ''}</span>
                     ) : (
                       <span className="text-red-600">失敗 {r.errcode || ''}</span>
+                    )}
+                    {r.refundCheck && (
+                      <div
+                        className={
+                          r.refundCheck.tone === 'ok'
+                            ? 'text-green-700'
+                            : r.refundCheck.tone === 'alert'
+                              ? 'font-medium text-red-600'
+                              : 'text-amber-700'
+                        }
+                      >
+                        {r.refundCheck.label}
+                      </div>
                     )}
                     {r.note && <div className="text-fg-muted">{r.note}</div>}
                   </td>

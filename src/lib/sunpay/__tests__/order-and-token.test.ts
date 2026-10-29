@@ -1,6 +1,6 @@
-import { randomBytes } from 'crypto'
+import { randomBytes, randomUUID } from 'crypto'
 import { describe, expect, it } from 'vitest'
-import { generateOrderNo, orderKindOf, toSunpayName, toSunpayOrderInfo, toSunpayPhone } from '../order'
+import { cardTokenOf, generateOrderNo, orderKindOf, toSunpayName, toSunpayOrderInfo, toSunpayPhone } from '../order'
 import { isTokenExpired, isV3Token, isValidTokenKey, packToken, unpackToken, type StoredToken } from '../token-store'
 
 describe('generateOrderNo', () => {
@@ -12,6 +12,7 @@ describe('generateOrderNo', () => {
 
   it('月扣 V3R 開頭', () => {
     expect(generateOrderNo('recurring')).toMatch(/^V3R\d{12}[A-Z0-9]{6}$/)
+    expect(generateOrderNo('upgrade')).toMatch(/^V3U\d{12}[A-Z0-9]{6}$/)
   })
 
   it('連續產生不重複', () => {
@@ -25,7 +26,21 @@ describe('orderKindOf', () => {
   it('依前綴判斷，舊 esafe 的 V2 編號回 null', () => {
     expect(orderKindOf('V3F261012153045K7Q2MX')).toBe('first')
     expect(orderKindOf('V3R261012153045K7Q2MX')).toBe('recurring')
+    expect(orderKindOf('V3U261012153045K7Q2MX')).toBe('upgrade')
     expect(orderKindOf('V226101215301234')).toBeNull()
+  })
+})
+
+describe('cardTokenOf', () => {
+  it('PAY-15 每筆首次付款各自一組：就是付款 id', () => {
+    expect(cardTokenOf('pay-1')).toBe('pay-1')
+    expect(cardTokenOf('pay-1')).not.toBe(cardTokenOf('pay-2'))
+  })
+
+  it('付款 id（uuid）符合手冊格式：≤ 36 碼、只有英數與 . _ @ -', () => {
+    const token = cardTokenOf(randomUUID())
+    expect(token.length).toBeLessThanOrEqual(36)
+    expect(token).toMatch(/^[A-Za-z0-9._@-]+$/)
   })
 })
 

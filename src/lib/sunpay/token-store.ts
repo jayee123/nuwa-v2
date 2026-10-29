@@ -10,7 +10,7 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'crypto'
 
 export interface StoredToken {
-  /** 首次付款時我們定義的卡片識別碼（= 會員 id） */
+  /** 首次付款時我們定義的卡片識別碼（= 付款 id；2026-10-16 以前綁的是會員 id，照樣能扣） */
   saveCardToken: string
   tokenKey: string
   /** YYYYMMDD；過了就不能再扣 */

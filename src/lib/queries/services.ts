@@ -15,21 +15,18 @@ export interface ServiceWithTeacher {
 export async function getActiveServices(): Promise<ServiceWithTeacher[]> {
   const supabase = await createClient()
 
-  const { data: services } = await supabase
-    .from('services')
-    .select('id, code, name, description, banner_url, plans, sort_order')
-    .eq('is_active', true)
-    .order('sort_order')
+  // 課程和老師同時查（老師不再等課程 id）：少一趟資料庫往返，首頁和 /courses 都用這支。
+  // 老師表很小，全撈有效的再用 service_id 對；對不到的（停用課程的老師）用不到。
+  const [{ data: services }, { data: teachers }] = await Promise.all([
+    supabase
+      .from('services')
+      .select('id, code, name, description, banner_url, plans, sort_order')
+      .eq('is_active', true)
+      .order('sort_order'),
+    supabase.from('teachers').select('service_id, name, avatar_url').eq('is_active', true),
+  ])
 
   if (!services) return []
-
-  // Get teachers for each service
-  const serviceIds = services.map((s) => s.id)
-  const { data: teachers } = await supabase
-    .from('teachers')
-    .select('service_id, name, avatar_url')
-    .in('service_id', serviceIds)
-    .eq('is_active', true)
 
   const teacherMap = new Map(
     (teachers ?? []).map((t) => [t.service_id, t])

@@ -3,7 +3,13 @@ import { getSecretParam } from '@/lib/secret-params'
 const SMS_URL = 'http://sms.milkidea.com/api/api-sms-send.sms'
 
 export async function sendSms(phone: string, message: string) {
-  const smsToken = await getSecretParam('SMS_API_KEY') || 'e14485ece4f8062e97b58f3d790ac2f7855'
+  // token 只從後台「系統設定 → Email & 簡訊 → SMS_API_KEY」讀。
+  // 原本在這裡寫死一把當備用，那把已在 GitHub 歷史中，等同公開（docs/LAUNCH-CHECKLIST.md §2）。
+  const smsToken = (await getSecretParam('SMS_API_KEY')).trim()
+  if (!smsToken) {
+    console.error('[sms] SMS_API_KEY 未設定（後台 系統設定 → Email & 簡訊），簡訊不發')
+    throw new Error('簡訊服務尚未設定，請聯絡客服。')
+  }
 
   const body = new URLSearchParams({
     token: smsToken,

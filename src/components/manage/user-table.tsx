@@ -9,6 +9,7 @@ import { CopyableId } from '@/components/ui/copyable-id'
 import { GENDER_OPTIONS, genderLabel } from '@/lib/user-fields'
 import { PLAN_CODES, PLAN_LABEL } from '@/lib/plans'
 import { MAX_GRANT_AMOUNT } from '@/lib/dialog-grant'
+import { deadlineInputValue } from '@/lib/plan-deadline'
 import type { DialogQuota } from '@/lib/queries/dialog-quota'
 
 interface User {
@@ -94,7 +95,7 @@ export function UserTable({
     setEditPlan(user.current_plan)
     setGrantAmount('')
     setGrantReason('')
-    setEditDeadline(user.plan_deadline ? user.plan_deadline.slice(0, 10) : '')
+    setEditDeadline(deadlineInputValue(user.plan_deadline))
     setSaveMsg(null)
   }
 
@@ -147,7 +148,8 @@ export function UserTable({
         const json = await res.json()
         setSaveMsg({ type: 'error', text: json.error || '更新失敗' })
       } else {
-        setSaveMsg({ type: 'success', text: '已儲存' })
+        const json = await res.json()
+        setSaveMsg({ type: 'success', text: json.subscriptionSynced ? '已儲存，訂閱扣款日也一起改了' : '已儲存' })
         // Update local state
         setUsers((prev) =>
           prev.map((u) =>
@@ -474,6 +476,7 @@ export function UserTable({
                   onChange={(e) => setEditDeadline(e.target.value)}
                   className="h-10 rounded-xl"
                 />
+                <p className="text-xs text-fg-muted">訂閱中的會員，月扣日會跟著改：改成今天，下一次早上 9 點排程就會扣款</p>
               </div>
             </div>
 

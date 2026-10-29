@@ -26,6 +26,8 @@
 - 金流商是**紅陽**（esafe.com.tw，SunPay）。Steve 定案文件邊界圖誤植「綠界」，以本規格為準。
 - 憑證取用走 `getSecretParam()`（`lib/secret-params.ts`）：先讀 DB `secret_params` 表、
   拿不到 fallback `process.env`、再拿不到回**空字串**（不 throw，見 BOUNDARIES §G.3）。
+> **2026-10-16 CLN-2**：舊版 esafe 程式（`src/lib/esafe/` 的綁卡、ChkValue、AES、Token 扣款，以及 `api/payment/callback`）已移除，金流全面改走 SunPay v3（`src/lib/sunpay/`）。帳本寫入改放 `src/lib/gateway-ledger.ts`。本節以下的 esafe 內容保留作歷史紀錄。
+
 - env 命名是 `ESAFE_*`（v1 spec 的 `HONGYANG_*` 命名作廢）：
   `ESAFE_MERCHANT_ID / ESAFE_PASSWORD / ESAFE_ENC_KEY / ESAFE_ENC_IV / ESAFE_BIND_URL / ESAFE_PASSCODE_URL / ESAFE_TRANS_URL`
 
@@ -41,7 +43,7 @@
 | Token 扣款 | `src/lib/esafe/payment.ts` | Passcode → Token Payment 兩段式 |
 | 發起付款 | `api/payment/initiate` | 建 payments row + 產表單 |
 | 回調 | `api/payment/callback` | ChkValue 驗證、重複回調防護（`status==='paid'` 早退）、訂閱建立/展延 |
-| 月扣 cron | `api/subscription/auto-charge` | 每月 1 號；`next_plan` 排程變更在此生效；plan_name 一律存代碼 |
+| 月扣 cron | `api/subscription/auto-charge` | 每天 09:00（台灣）扣到期日在今天以前的訂閱（BIL-1，原本每月 1 號）；`next_plan` 排程變更在此生效；plan_name 一律存代碼 |
 | 到期提醒 | `api/subscription/notify-expiring` | 每日 07:00 |
 | 降級 | `api/subscription/downgrade` | 下期生效 |
 

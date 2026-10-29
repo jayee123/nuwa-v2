@@ -1,12 +1,17 @@
 {
+  "regions": ["hnd1"],
   "crons": [
     {
       "path": "/api/courses/remind",
       "schedule": "0 9 * * *"
     },
     {
+      "path": "/api/payment/reconcile",
+      "schedule": "0 0 * * *"
+    },
+    {
       "path": "/api/subscription/auto-charge",
-      "schedule": "0 0 1 * *"
+      "schedule": "0 1 * * *"
     },
     {
       "path": "/api/subscription/notify-expiring",

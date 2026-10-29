@@ -40,7 +40,9 @@ export default async function SubscribePage({
     currentPlan = userData?.current_plan ?? 'free'
     quotaLabel = dialogQuotaLabel(quota)
     nextPlan = userData?.next_plan ?? null
-    planDeadline = userData?.plan_deadline ?? null
+    // 免費會員不顯示到期日：轉成免費時（月扣失敗、後台收掉訂閱）不會清 plan_deadline，
+    // 留著的是上一個訂閱的日期，顯示出來像是還有一期（PAY-17）
+    planDeadline = currentPlan === 'free' ? null : (userData?.plan_deadline ?? null)
   }
 
   // 統一方案（plans 表），以 code 為 key

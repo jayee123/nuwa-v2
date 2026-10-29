@@ -12,6 +12,7 @@ import {
   parseNotify,
   phpUrlencode,
   toPem,
+  verifyNotify,
   type SunpaySigningKeys,
 } from '../crypto'
 
@@ -101,6 +102,17 @@ describe('buildSignedRequest', () => {
   })
 })
 
+describe('buildSignedRequest — 即時交易查詢的陣列 body', () => {
+  it('body 是陣列時原樣保留，head 照樣排在後面（用 check_value 驗簽章字串）', () => {
+    const now = new Date('2026-10-17T00:00:00Z')
+    const req = buildSignedRequest(keys, [{ td: 'V3F1' }], now)
+    const expected = phpUrlencode(
+      JSON.stringify({ body: [{ td: 'V3F1' }], head: { send_time: genSendTime(now), web: keys.web } }),
+    )
+    expect(req.check_value).toBe(calcCheckValue(expected, DOC_SHA2_SECRET))
+  })
+})
+
 describe('parseNotify', () => {
   it('S-PAY-01 紅陽私鑰加密的通知：解得開、特店相符、check_value 相符', () => {
     const parsed = parseNotify(keys, fakeSunpayNotify(NOTIFY_BODY))
@@ -136,5 +148,27 @@ describe('parseNotify', () => {
 
   it('rsamsg 長度不是 128 的倍數：throw', () => {
     expect(() => parseNotify(keys, { rsamsg: Buffer.from('short').toString('base64'), check_value: '' })).toThrow(/長度/)
+  })
+})
+
+describe('verifyNotify（PAY-11：check_value 不符就擋）', () => {
+  it('特店相符、check_value 相符：通過', () => {
+    expect(verifyNotify(parseNotify(keys, fakeSunpayNotify(NOTIFY_BODY)))).toEqual({ ok: true })
+  })
+
+  it('S-PAY-03 check_value 被竄改：擋下', () => {
+    const notify = { ...fakeSunpayNotify(NOTIFY_BODY), check_value: '0'.repeat(64) }
+    expect(verifyNotify(parseNotify(keys, notify))).toEqual({ ok: false, reason: 'check_value_mismatch' })
+  })
+
+  it('沒帶 check_value：擋下', () => {
+    const notify = { ...fakeSunpayNotify(NOTIFY_BODY), check_value: '' }
+    expect(verifyNotify(parseNotify(keys, notify))).toEqual({ ok: false, reason: 'check_value_mismatch' })
+  })
+
+  it('別家特店：擋下（先看特店，再看 check_value）', () => {
+    const other = { ...NOTIFY_BODY, head: { ...NOTIFY_BODY.head, web: 'MC00000000' } }
+    const notify = { ...fakeSunpayNotify(other), check_value: '0'.repeat(64) }
+    expect(verifyNotify(parseNotify(keys, notify))).toEqual({ ok: false, reason: 'merchant_mismatch' })
   })
 })

@@ -13,6 +13,12 @@ export const SUNPAY_TRADE_URLS = {
   test: 'https://testtrade.sunpay.com.tw/v3/token',
 } as const
 
+/** 即時交易查詢（一般金流手冊 V1.1.1 §4.4；代碼授權手冊 §4.3.3 第 5 點叫「即時訂單查詢」） */
+export const SUNPAY_QUERY_URLS = {
+  production: 'https://trade.sunpay.com.tw/v4/query/PaymentCheck',
+  test: 'https://testtrade.sunpay.com.tw/v4/query/PaymentCheck',
+} as const
+
 export type SunpayEnv = keyof typeof SUNPAY_TRADE_URLS
 
 export interface SunpayConfig extends SunpaySigningKeys {

@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { PLAN_LEVEL, PLAN_FULL_NAME } from '@/lib/plans'
+import { PLAN_LEVEL, PLAN_FULL_NAME, isGateablePlan } from '@/lib/plans'
 
 const CODE_TO_NAME = PLAN_FULL_NAME
 
@@ -23,7 +23,11 @@ export async function POST(request: Request) {
   if (!userData) return NextResponse.json({ error: '找不到使用者資料' }, { status: 404 })
 
   const newPlanCode = planCode
-  if (!newPlanCode || !(newPlanCode in PLAN_LEVEL)) return NextResponse.json({ error: '無效的方案' }, { status: 400 })
+  // 方案頁沒有「降為免費」，API 也不收：排了 free，到期月扣會照上次金額扣款，而不是停掉訂閱（Jeff 10/19）
+  if (newPlanCode === 'free') {
+    return NextResponse.json({ error: '無法降級為免費方案；如要停止續約，請聯絡客服。' }, { status: 400 })
+  }
+  if (!isGateablePlan(newPlanCode)) return NextResponse.json({ error: '無效的方案' }, { status: 400 })
 
   const currentLevel = PLAN_LEVEL[userData.current_plan] ?? 0
   const newLevel = PLAN_LEVEL[newPlanCode] ?? 0

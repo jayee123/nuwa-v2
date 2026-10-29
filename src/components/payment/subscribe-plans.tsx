@@ -6,6 +6,15 @@ import { useRouter } from 'next/navigation'
 import { Check, X, Clock } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { PLAN_FULL_NAME } from '@/lib/plans'
 
@@ -89,6 +98,8 @@ export function SubscribePlans({
   const [downgrading, setDowngrading] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  // 降級確認改用自製視窗，不用瀏覽器內建的 confirm()（Steve 10/18 D，PAY-22）
+  const [downgradeTarget, setDowngradeTarget] = useState<{ code: string; name: string } | null>(null)
 
   const currentLevel = PLAN_LEVEL[currentPlan] ?? 0
 
@@ -104,9 +115,7 @@ export function SubscribePlans({
     return planLevel > currentLevel ? 'upgrade' : 'downgrade'
   }
 
-  async function handleDowngrade(planCode: string, planName: string) {
-    if (!confirm(`確定要降級至「${planName}」嗎？\n\n目前方案的權益將維持到到期日，届時自動切換為新方案。`)) return
-
+  async function handleDowngrade(planCode: string) {
     setDowngrading(true)
     setMessage(null)
     try {
@@ -126,6 +135,7 @@ export function SubscribePlans({
       setMessage('系統錯誤，請重試')
     } finally {
       setDowngrading(false)
+      setDowngradeTarget(null)
     }
   }
 
@@ -297,7 +307,7 @@ export function SubscribePlans({
                   </Link>
                 ) : (
                   <Button
-                    onClick={() => handleDowngrade(plan.code, plan.name)}
+                    onClick={() => setDowngradeTarget({ code: plan.code, name: plan.name })}
                     disabled={downgrading}
                     variant="outline"
                     className="h-11 w-full rounded-xl text-sm"
@@ -310,6 +320,27 @@ export function SubscribePlans({
           )
         })}
       </div>
+
+      <Dialog open={downgradeTarget !== null} onOpenChange={(open) => { if (!open && !downgrading) setDowngradeTarget(null) }}>
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>確定降級至「{downgradeTarget?.name}」？</DialogTitle>
+            <DialogDescription>
+              {deadlineDisplay ? `${deadlineDisplay} 以前` : '到期日以前'}都還是目前的方案，次數上限和功能不變，這期不扣款也不退款。
+              到期當天以新方案的價格自動扣款，扣款成功後切換。到期前可以隨時取消降級。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" disabled={downgrading} />}>先不要</DialogClose>
+            <Button
+              onClick={() => downgradeTarget && handleDowngrade(downgradeTarget.code)}
+              disabled={downgrading}
+            >
+              {downgrading ? '處理中...' : '確定降級'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

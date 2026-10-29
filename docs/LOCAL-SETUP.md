@@ -31,7 +31,7 @@
 
 > 📌 **程式實際會從環境變數讀的只有 4 個。**
 >
-> 金流（`ESAFE_*`）、簡訊（`SMS_API_KEY`）、Email（`RESEND_API_KEY`）、
+> 金流（`SUNPAY_*`）、簡訊（`SMS_API_KEY`）、Email（`RESEND_API_KEY`）、
 > 排程金鑰（`CRON_SECRET`）**不是環境變數** —— 它們存在資料庫，
 > 由後台 `/manage` 的系統參數頁管理，程式透過 `getSecretParam()` 讀取。
 >

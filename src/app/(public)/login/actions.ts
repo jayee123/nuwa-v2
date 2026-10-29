@@ -5,10 +5,33 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { redirect } from 'next/navigation'
 import { formatPhoneE164 } from '@/lib/phone'
 import { safeNext } from '@/lib/safe-next'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { checkOtp, issueAdminOtp, maskEmail, OTP_ERROR, type OtpChannel } from '@/lib/admin-otp'
 
 // 020: 軟刪除（deleted_at）的帳號一律擋在登入之前。
 // 這是 app 層守門；auth.users 端的停用另由 scripts/ban-soft-deleted-users.ts 處理。
 const DISABLED_ACCOUNT_ERROR = '此帳號已停用，如有疑問請聯繫客服'
+
+/** 手機／Email 登入的回傳：成功會 redirect，只有要驗證碼或出錯時才有值 */
+export type LoginResult =
+  | { requireOtp: true; phone: string; via: OtpChannel; sentTo: string | null; error?: undefined }
+  | { requireOtp?: undefined; error: string }
+
+/**
+ * 密碼驗過之後，發管理員驗證碼。via=email 時寄到這個帳號在 users 表的 Email（不收前端傳來的地址）。
+ * 回傳的 sentTo 給畫面顯示「已寄送至 j***@…」。
+ */
+async function startAdminOtp(admin: SupabaseClient, key: string, accountEmail: string | null, via: OtpChannel): Promise<LoginResult> {
+  if (via === 'email') {
+    if (!accountEmail) return { error: '這個管理員帳號沒有設定 Email，請改用簡訊' }
+    const otp = await issueAdminOtp(admin, key, new Date(), { via: 'email', email: accountEmail })
+    if (!otp.ok) return { error: otp.error }
+    return { requireOtp: true, phone: key, via, sentTo: maskEmail(accountEmail) }
+  }
+  const otp = await issueAdminOtp(admin, key)
+  if (!otp.ok) return { error: otp.error }
+  return { requireOtp: true, phone: key, via, sentTo: null }
+}
 
 
 export async function login(formData: {
@@ -16,7 +39,9 @@ export async function login(formData: {
   password: string
   countryCode: string
   next?: string
-}) {
+  /** 管理員驗證碼送到哪（預設簡訊；收不到時畫面上可改 Email） */
+  otpVia?: OtpChannel
+}): Promise<LoginResult> {
   const phone = formatPhoneE164(formData.phone, formData.countryCode)
   const admin = createAdminClient()
 
@@ -29,7 +54,7 @@ export async function login(formData: {
     : null
   const { data: userData } = await admin
     .from('users')
-    .select('role, deleted_at')
+    .select('role, deleted_at, email')
     .or([`phone.eq.${phone}`, `phone.eq.${phoneWithout}`, phoneLocal && `phone.eq.${phoneLocal}`].filter(Boolean).join(','))
     .limit(1)
     .single()
@@ -54,20 +79,8 @@ export async function login(formData: {
     // Password is correct — sign out immediately (don't keep session until OTP verified)
     await supabase.auth.signOut()
 
-    // Send OTP — 目前固定 1234，不發簡訊（正式上線再改回隨機碼 + SMS）
-    const code = '1234'
-    await admin.from('sms_verifications').insert({
-      phone,
-      code,
-      expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-      verified: false,
-    })
-
-    // TODO: 正式上線後啟用簡訊發送
-    // const { sendSms } = await import('@/lib/sms/milkidea')
-    // await sendSms(phone, `【羽升學苑】管理員登入驗證碼：${code}，5 分鐘內有效。`)
-
-    return { requireOtp: true, phone }
+    // 隨機碼 + 發簡訊或寄 Email（lib/admin-otp）
+    return startAdminOtp(admin, phone, userData.email ?? null, formData.otpVia ?? 'sms')
   }
 
   // Regular user — direct login
@@ -85,14 +98,19 @@ export async function login(formData: {
 }
 
 // Email 登入模式（手機/Email 切換的另一半）。
-// 一般用戶：直接以 email 登入。superadmin：驗密碼後仍走手機 OTP（與手機模式一致）。
-export async function loginWithEmail(formData: { email: string; password: string; next?: string }) {
+// 一般用戶：直接以 email 登入。superadmin：驗密碼後走 OTP（預設簡訊，可改 Email，與手機模式一致）。
+export async function loginWithEmail(formData: {
+  email: string
+  password: string
+  next?: string
+  otpVia?: OtpChannel
+}): Promise<LoginResult> {
   const email = formData.email.trim().toLowerCase()
   const admin = createAdminClient()
 
   const { data: userData } = await admin
     .from('users')
-    .select('role, phone, deleted_at')
+    .select('role, phone, email, deleted_at')
     .ilike('email', email)
     .limit(1)
     .single()
@@ -113,15 +131,7 @@ export async function loginWithEmail(formData: { email: string; password: string
       return { error: '管理員帳號缺少手機號碼，無法進行二次驗證，請改用手機登入' }
     }
 
-    // 目前固定 1234，不發簡訊（正式上線再改回隨機碼 + SMS）
-    const code = '1234'
-    await admin.from('sms_verifications').insert({
-      phone: userData.phone,
-      code,
-      expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
-      verified: false,
-    })
-    return { requireOtp: true, phone: userData.phone }
+    return startAdminOtp(admin, userData.phone, userData.email ?? null, formData.otpVia ?? 'sms')
   }
 
   // 一般用戶 — 直接登入
@@ -150,17 +160,14 @@ export async function loginWithOtp(formData: {
     .limit(1)
     .single()
 
-  if (!record) {
-    return { error: '驗證碼不存在，請重新發送' }
+  if (!record) return { error: OTP_ERROR.missing }
+  const now = new Date()
+  const check = checkOtp(record, formData.otp, now)
+  if (check === 'wrong') {
+    // 輸錯一次就作廢（lib/admin-otp 開頭的說明）：不然 4 碼在 5 分鐘內可以一直猜
+    await admin.from('sms_verifications').update({ expires_at: now.toISOString() }).eq('id', record.id)
   }
-
-  if (new Date(record.expires_at) < new Date()) {
-    return { error: '驗證碼已過期，請重新發送' }
-  }
-
-  if (record.code !== formData.otp) {
-    return { error: '驗證碼錯誤' }
-  }
+  if (check !== 'ok') return { error: OTP_ERROR[check] }
 
   // Mark OTP as used
   await admin

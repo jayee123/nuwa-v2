@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Plus, Pencil, Archive, Trash2, Copy, X, ExternalLink, RotateCcw, Shield } from 'lucide-react'
 import { GATEABLE_PLAN_CODES } from '@/lib/plans'
+import { TRIAL_DAYS_MAX, TRIAL_DIALOG_LIMIT_MAX, type TrialDefaults } from '@/lib/launch-gate'
 
 export interface AppRow {
   id: string
@@ -19,7 +20,10 @@ export interface AppRow {
   required_plan: string | null
   status: string
   sort_order: number
-  trial_days: number
+  /** null = 公版預設 */
+  trial_days: number | null
+  /** null = 公版預設；0 = 不限次數 */
+  trial_dialog_limit: number | null
   user_count: number
   created_at: string
   updated_at: string
@@ -43,11 +47,14 @@ type FormState = {
   required_plan: string
   status: string
   sort_order: number
-  trial_days: number
+  /** 空字串 = 公版預設 */
+  trial_days: string
+  /** 空字串 = 公版預設 */
+  trial_dialog_limit: string
 }
 
 const EMPTY_FORM: FormState = {
-  slug: '', name: '', tagline: '', icon: '', app_url: '', admin_url: '', db_schema: '', required_plan: '', status: 'draft', sort_order: 0, trial_days: 14,
+  slug: '', name: '', tagline: '', icon: '', app_url: '', admin_url: '', db_schema: '', required_plan: '', status: 'draft', sort_order: 0, trial_days: '', trial_dialog_limit: '',
 }
 
 interface AppAdminRow {
@@ -57,7 +64,21 @@ interface AppAdminRow {
   role: string
 }
 
-export function AppsManager({ initialApps, isSuper }: { initialApps: AppRow[]; isSuper: boolean }) {
+/** 表單的空字串 = 留空（用公版預設）；其餘交給 API 驗證 */
+function optionalNumber(value: string): number | null {
+  return value.trim() === '' ? null : Number(value)
+}
+
+export function AppsManager({
+  initialApps,
+  isSuper,
+  trialDefaults,
+}: {
+  initialApps: AppRow[]
+  isSuper: boolean
+  /** 公版試用預設（系統設定）；App 欄位留空時用它 */
+  trialDefaults: TrialDefaults
+}) {
   const router = useRouter()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -92,7 +113,9 @@ export function AppsManager({ initialApps, isSuper }: { initialApps: AppRow[]; i
     setForm({
       slug: app.slug, name: app.name, tagline: app.tagline ?? '', icon: app.icon ?? '',
       app_url: app.app_url ?? '', admin_url: app.admin_url ?? '', db_schema: app.db_schema, required_plan: app.required_plan ?? '',
-      status: app.status, sort_order: app.sort_order, trial_days: app.trial_days ?? 14,
+      status: app.status, sort_order: app.sort_order,
+      trial_days: app.trial_days == null ? '' : String(app.trial_days),
+      trial_dialog_limit: app.trial_dialog_limit == null ? '' : String(app.trial_dialog_limit),
     })
     setError(null)
     setModal({ type: 'edit', app })
@@ -131,7 +154,8 @@ export function AppsManager({ initialApps, isSuper }: { initialApps: AppRow[]; i
         body: JSON.stringify({
           name: form.name.trim(), tagline: form.tagline, icon: form.icon, app_url: form.app_url, admin_url: form.admin_url,
           required_plan: form.required_plan || null, status: form.status, sort_order: Number(form.sort_order) || 0,
-          trial_days: Number.isInteger(Number(form.trial_days)) ? Number(form.trial_days) : 14,
+          trial_days: optionalNumber(form.trial_days),
+          trial_dialog_limit: optionalNumber(form.trial_dialog_limit),
         }),
       })
       const json = await res.json()
@@ -381,10 +405,21 @@ export function AppsManager({ initialApps, isSuper }: { initialApps: AppRow[]; i
                   </Field>
                 )}
                 {modal.type === 'edit' && (
-                  <Field label="免費試用天數（0 = 關閉試用；改動不追溯既有試用）">
+                  <Field label={`免費試用天數（留空 = 公版預設 ${trialDefaults.trialDays} 天；0 = 關閉試用；改動不追溯既有試用）`}>
                     <input
-                      type="number" min={0} max={365} step={1} value={form.trial_days}
-                      onChange={(e) => setForm({ ...form, trial_days: Number(e.target.value) })}
+                      type="number" min={0} max={TRIAL_DAYS_MAX} step={1} value={form.trial_days}
+                      placeholder={`公版預設 ${trialDefaults.trialDays}`}
+                      onChange={(e) => setForm({ ...form, trial_days: e.target.value })}
+                      className="input"
+                    />
+                  </Field>
+                )}
+                {modal.type === 'edit' && (
+                  <Field label={`試用對話次數（留空 = 公版預設 ${trialDefaults.trialDialogLimit ?? '不限'}；0 = 不限；天數或次數先到者結束）`}>
+                    <input
+                      type="number" min={0} max={TRIAL_DIALOG_LIMIT_MAX} step={1} value={form.trial_dialog_limit}
+                      placeholder={`公版預設 ${trialDefaults.trialDialogLimit ?? '不限'}`}
+                      onChange={(e) => setForm({ ...form, trial_dialog_limit: e.target.value })}
                       className="input"
                     />
                   </Field>

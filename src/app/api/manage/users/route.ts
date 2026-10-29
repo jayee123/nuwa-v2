@@ -8,6 +8,7 @@ import {
   isValidGender,
   normalizeEmail,
 } from '@/lib/user-fields'
+import { planDeadlineChange } from '@/lib/plan-deadline'
 
 export async function PATCH(request: Request) {
   const supabase = await createClient()
@@ -94,10 +95,55 @@ export async function PATCH(request: Request) {
   // dialog_limit（舊制「剩餘次數」）不再由後台寫：新制額度不讀它，改了沒效果。
   // 要補次數走 POST /api/manage/users/:id/grants。
   if (updates.current_plan !== undefined) allowed.current_plan = updates.current_plan
-  if (updates.plan_deadline !== undefined) allowed.plan_deadline = updates.plan_deadline || null
+
+  // 方案到期日要跟訂閱的 ends_at 一起改，月扣看的是 ends_at（BIL-4，lib/plan-deadline）
+  let subscriptionToSync: { id: string; endsAt: string } | null = null
+  if (updates.plan_deadline !== undefined) {
+    const [{ data: current }, { data: activeSubs, error: subsError }] = await Promise.all([
+      admin.from('users').select('plan_deadline').eq('id', id).single(),
+      admin.from('subscriptions').select('id').eq('user_id', id).eq('status', 'active'),
+    ])
+    if (subsError) {
+      console.error('[PATCH /api/manage/users] 查訂閱失敗:', subsError)
+      return NextResponse.json({ error: '查詢訂閱失敗，請稍後再試' }, { status: 500 })
+    }
+    const change = planDeadlineChange(
+      updates.plan_deadline,
+      current?.plan_deadline ?? null,
+      (activeSubs ?? []).map((s) => s.id),
+    )
+    if (change.action === 'reject') return NextResponse.json({ error: change.error }, { status: 400 })
+    if (change.action === 'set') {
+      allowed.plan_deadline = change.deadline
+      if (change.subscriptionId && change.deadline) {
+        subscriptionToSync = { id: change.subscriptionId, endsAt: change.deadline }
+      }
+    }
+  }
 
   if (Object.keys(allowed).length === 0) {
+    // 只送了到期日而且沒變 —— 沒有要改的，當作成功
+    if (updates.plan_deadline !== undefined) return NextResponse.json({ success: true, subscriptionSynced: false })
     return NextResponse.json({ error: 'No fields to update' }, { status: 400 })
+  }
+
+  // 先改訂閱再改會員：會員那邊失敗時，再存一次日期仍然「有變」，會重新同步（重做無害）
+  if (subscriptionToSync) {
+    const { error: subError } = await admin
+      .from('subscriptions')
+      .update({ ends_at: subscriptionToSync.endsAt })
+      .eq('id', subscriptionToSync.id)
+      .eq('status', 'active')
+    if (subError) {
+      console.error('[PATCH /api/manage/users] 同步訂閱到期日失敗:', subError)
+      return NextResponse.json({ error: '訂閱到期日更新失敗，這次沒有儲存，請再試一次' }, { status: 500 })
+    }
+    console.log('[PATCH /api/manage/users] 後台改方案到期日，已同步訂閱', {
+      by: user.id,
+      userId: id,
+      subscriptionId: subscriptionToSync.id,
+      endsAt: subscriptionToSync.endsAt,
+    })
   }
 
   const { error } = await admin.from('users').update(allowed).eq('id', id)
@@ -107,5 +153,5 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: friendlyDbError(error) }, { status: 500 })
   }
 
-  return NextResponse.json({ success: true })
+  return NextResponse.json({ success: true, subscriptionSynced: !!subscriptionToSync })
 }

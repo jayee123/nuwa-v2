@@ -9,7 +9,10 @@ import { AdminBanner } from '@/components/layout/admin-banner'
 import { Button } from '@/components/ui/button'
 import { getActiveServices } from '@/lib/queries/services'
 import { PLAN_FULL_NAME, meetsRequiredPlan } from '@/lib/plans'
-import { decideLaunch, isTrialGrantedEntry } from '@/lib/launch-gate'
+import { decideLaunch, isTrialGrantedEntry, resolveTrialTerms, trialFromRow, type TrialState } from '@/lib/launch-gate'
+import { getTrialDefaults } from '@/lib/trial-defaults'
+import { TRIAL_BADGE_CLASS, trialBadge, trialOffer } from '@/lib/trial-display'
+import { StartTrialLabel } from '@/components/apps/start-trial-label'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createClient } from '@/lib/supabase/server'
 
@@ -69,15 +72,17 @@ type HomeAppRow = {
   icon: string | null
   status: string
   required_plan: string | null
-  /** apps.trial_days（0 = 此 App 關閉試用）；按鈕文案要用它，別寫死天數 */
+  /** apps.trial_days（null = 公版預設、0 = 此 App 關閉試用）；按鈕文案要用它，別寫死天數 */
   trial_days: number | null
+  /** apps.trial_dialog_limit（null = 公版預設、0 = 不限次數）；試用是天數或次數先到者結束 */
+  trial_dialog_limit: number | null
 }
 
 async function getLaunchableApps(): Promise<HomeAppRow[]> {
   const admin = createAdminClient()
   const { data } = await admin
     .from('apps')
-    .select('id, slug, name, tagline, icon, status, required_plan, trial_days')
+    .select('id, slug, name, tagline, icon, status, required_plan, trial_days, trial_dialog_limit')
     .in('status', ['active', 'internal'])
     .order('sort_order', { ascending: true })
   return (data ?? []) as HomeAppRow[]
@@ -88,33 +93,40 @@ async function getViewerContext(): Promise<{
   loggedIn: boolean
   launched: Set<string>
   currentPlan: string
-  trialByAppId: Map<string, string>
+  trialByAppId: Map<string, TrialState>
 }> {
-  const empty = { loggedIn: false, launched: new Set<string>(), currentPlan: 'free', trialByAppId: new Map<string, string>() }
+  const empty = { loggedIn: false, launched: new Set<string>(), currentPlan: 'free', trialByAppId: new Map<string, TrialState>() }
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return empty
   const admin = createAdminClient()
+  // 進過的 App 直接帶出 slug（user_apps.app_id → apps），不用查完 id 再查一次 apps
   const [{ data: bindings }, { data: u }, { data: trials }] = await Promise.all([
-    admin.from('user_apps').select('app_id').eq('user_id', user.id),
+    admin.from('user_apps').select('apps(slug)').eq('user_id', user.id),
     admin.from('users').select('current_plan').eq('id', user.id).maybeSingle(),
-    admin.from('user_app_trials').select('app_id, expires_at').eq('user_id', user.id),
+    admin.from('user_app_trials').select('app_id, expires_at, dialogs_used, dialog_limit').eq('user_id', user.id),
   ])
-  const trialByAppId = new Map<string, string>()
-  for (const t of trials ?? []) trialByAppId.set(t.app_id, t.expires_at)
-  const ids = (bindings ?? []).map((b) => b.app_id as string)
-  let launched = new Set<string>()
-  if (ids.length > 0) {
-    const { data: appsRows } = await admin.from('apps').select('slug').in('id', ids)
-    launched = new Set((appsRows ?? []).map((a) => a.slug as string))
+  const trialByAppId = new Map<string, TrialState>()
+  for (const t of trials ?? []) {
+    const trial = trialFromRow(t)
+    if (trial) trialByAppId.set(t.app_id, trial)
   }
+  const launched = new Set(
+    (bindings ?? [])
+      .map((b) => (b.apps as unknown as { slug: string } | null)?.slug)
+      .filter((slug): slug is string => !!slug),
+  )
   return { loggedIn: true, launched, currentPlan: u?.current_plan ?? 'free', trialByAppId }
 }
 
 export default async function HomePage() {
-  const services = await getActiveServices()
-  const apps = await getLaunchableApps()
-  const { loggedIn, launched, currentPlan, trialByAppId } = await getViewerContext()
+  // 四組資料互不相依，同時查：原本一個查完才查下一個，首頁要等 5 趟以上資料庫往返
+  const [services, apps, { loggedIn, launched, currentPlan, trialByAppId }, trialDefaults] = await Promise.all([
+    getActiveServices(),
+    getLaunchableApps(),
+    getViewerContext(),
+    getTrialDefaults(createAdminClient()),
+  ])
   const now = new Date()
 
   // App 卡（apps 表驅動）＋ 還沒有 App 的課程（services 表，維持「敬請期待」預告位）
@@ -219,20 +231,13 @@ export default async function HomePage() {
                 const description = svc?.description ?? app.tagline ?? ''
                 // 進得去的條件講在卡片上（Jeff 2026-09-10）：門檻 badge + 試用倒數
                 const planMeets = app.required_plan ? meetsRequiredPlan(currentPlan, app.required_plan) : true
-                const trialExpiresAt = trialByAppId.get(app.id)
-                const showTrial = loggedIn && Boolean(trialExpiresAt) && isTrialGrantedEntry(app.status, planMeets)
-                const trialLeft = trialExpiresAt
-                  ? Math.ceil((new Date(trialExpiresAt).getTime() - now.getTime()) / (24 * 60 * 60 * 1000))
-                  : 0
-                const trialDays = Number(app.trial_days ?? 0)
+                const trial = trialByAppId.get(app.id) ?? null
+                const showTrial = loggedIn && trial !== null && isTrialGrantedEntry(app.status, planMeets)
+                const badge = trial ? trialBadge(trial, now) : null
+                const terms = resolveTrialTerms(app, trialDefaults)
+                const offer = trialOffer(terms.days, terms.dialogLimit)
                 // 按鈕文案與 launch gate 同源，別讓卡片講一套、實際做另一套
-                const decision = decideLaunch({
-                  status: app.status,
-                  planMeets,
-                  trialDays,
-                  trial: trialExpiresAt ? { expiresAt: new Date(trialExpiresAt) } : null,
-                  now,
-                })
+                const decision = decideLaunch({ status: app.status, planMeets, trialDays: terms.days, trial, now })
                 const willBurnTrial = decision.kind === 'create_trial_and_enter'
                 return (
                   <div
@@ -263,12 +268,8 @@ export default async function HomePage() {
                         )}
                       </div>
                       <p className="mt-1 flex-1 text-sm text-fg-secondary">{description}</p>
-                      {showTrial && (
-                        <p className={`mt-1 text-xs font-medium ${
-                          trialLeft <= 0 ? 'text-fg-muted' : trialLeft <= 3 ? 'text-amber-600' : 'text-brand-purple'
-                        }`}>
-                          {trialLeft <= 0 ? '免費試用已到期 — 訂閱後可繼續使用' : `免費試用中・剩 ${trialLeft} 天`}
-                        </p>
+                      {showTrial && badge && (
+                        <p className={`mt-1 text-xs font-medium ${TRIAL_BADGE_CLASS[badge.tone]}`}>{badge.text}</p>
                       )}
                       {app.status === 'active' ? (
                         <>
@@ -294,7 +295,7 @@ export default async function HomePage() {
                               href={`/api/apps/${app.slug}/launch?to=welcome`}
                               className="mt-4 inline-flex items-center justify-center gap-2 rounded-xl bg-brand-purple px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
                             >
-                              {willBurnTrial ? `開始 ${trialDays} 天免費試用` : '進去使用 App'}
+                              {willBurnTrial ? <StartTrialLabel offer={offer} /> : '進去使用 App'}
                             </a>
                           )}
                           {/* 原本寫「綁卡即享 7 天免費試用，之後自動扣款」—— 兩處都與事實相反：
@@ -302,7 +303,7 @@ export default async function HomePage() {
                               （Steve〈金流與試用架構定案〉）。承諾了系統不會做的事，是會退費的那種誤導。 */}
                           {willBurnTrial && (
                             <p className="mt-2 text-center text-xs text-fg-muted">
-                              免費試用 {trialDays} 天・不需綁卡、不會自動扣款
+                              免費試用 {offer}・不需綁卡、不會自動扣款
                             </p>
                           )}
                         </>

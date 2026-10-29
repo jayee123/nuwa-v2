@@ -4,14 +4,20 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { getSecretParam } from '@/lib/secret-params'
 import { getPlanByCode } from '@/lib/queries/plans'
 import { PLAN_FULL_NAME } from '@/lib/plans'
-import { recordGatewayTx } from '@/lib/esafe/ledger'
+import { recordGatewayTx } from '@/lib/gateway-ledger'
 import { getSunpayConfig, type SunpayConfig } from '@/lib/sunpay/config'
 import { isOutcomeUnknown, requestSubsequentPayment } from '@/lib/sunpay/client'
 import { downgradeAfterRepeatedFailures } from '@/lib/sunpay/settle'
 import { generateOrderNo, toSunpayName, toSunpayOrderInfo, toSunpayPhone } from '@/lib/sunpay/order'
 import { isTokenExpired, isV3Token, unpackToken, type StoredToken } from '@/lib/sunpay/token-store'
+import { latestCardPayment } from '@/lib/sunpay/card-on-file'
+import { chargeCutoff, taiwanDateCompact } from '@/lib/sunpay/charge-schedule'
 
 // Cron：到期訂閱自動月扣（紅陽 SunPay v3 代碼後續付款）。
+//
+// 每天台灣 09:00 跑（v2/vercel.json），扣「到期日在台灣今天以前」的訂閱 —— 到期當天就扣（BIL-1）。
+// 原本每月 1 號才跑，15 號到期的要等到下個月 1 號，中間約半個月空窗。
+// 送出就被拒的，隔天排程會再試一次；3 天內失敗 2 次就降回免費（settle.ts 的 downgradeAfterRepeatedFailures）。
 //
 // 紅陽的後續付款是非同步的：這裡送出請求、紅陽回 code=00 只代表「收下了」，
 // 付款維持 pending，實際成功／失敗由 /api/payment/sunpay/notify 收到通知時入帳並展延訂閱。
@@ -42,10 +48,6 @@ interface ExpiringSub {
 
 type ChargeOutcome = 'requested' | 'failed' | 'unknown' | 'skipped' | 'expired'
 
-function todayInTaiwan(): string {
-  return new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10).replace(/-/g, '')
-}
-
 async function expireToFree(admin: SupabaseClient, subId: string, userId: string): Promise<void> {
   await admin.from('subscriptions').update({ status: 'expired' }).eq('id', subId)
   await admin.from('users').update({ current_plan: 'free', dialog_limit: 0, next_plan: null }).eq('id', userId)
@@ -73,15 +75,7 @@ async function latestStoredToken(
   userId: string,
   tokenKey: string,
 ): Promise<{ token: StoredToken; lastAmount: number } | { error: 'none' | 'unreadable' }> {
-  const { data: lastPayment } = await admin
-    .from('payments')
-    .select('token_data, amount')
-    .eq('user_id', userId)
-    .eq('status', 'paid')
-    .like('token_data', 'v3:%')
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
+  const lastPayment = await latestCardPayment(admin, userId)
   if (!lastPayment?.token_data || !isV3Token(lastPayment.token_data)) return { error: 'none' }
   try {
     return { token: unpackToken(lastPayment.token_data, tokenKey), lastAmount: lastPayment.amount }
@@ -220,19 +214,19 @@ export async function GET(request: Request) {
   }
 
   const admin = createAdminClient()
-  const today = new Date().toISOString().slice(0, 10)
+  const now = new Date()
   const { data: expiring, error } = await admin
     .from('subscriptions')
     .select('id, service_id, users(id, email, phone, nickname, current_plan, next_plan, deleted_at)')
     .eq('status', 'active')
-    .lte('ends_at', today + 'T23:59:59Z')
+    .lte('ends_at', chargeCutoff(now))
   if (error) {
     console.error('[auto-charge] 查詢到期訂閱失敗', error.message)
     return NextResponse.json({ error: '查詢失敗' }, { status: 500 })
   }
 
   const counts: Record<ChargeOutcome, number> = { requested: 0, failed: 0, unknown: 0, skipped: 0, expired: 0 }
-  const twToday = todayInTaiwan()
+  const twToday = taiwanDateCompact(now)
   for (const sub of (expiring ?? []) as unknown as ExpiringSub[]) {
     try {
       counts[await chargeOne(admin, configResult.config, sub, twToday)]++

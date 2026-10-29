@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/input'
 import { CountryCodeSelect } from '@/components/ui/country-code-select'
 import { login, loginWithEmail, loginWithOtp } from '@/app/(public)/login/actions'
 import { isValidPhone } from '@/lib/phone'
+import type { OtpChannel } from '@/lib/admin-otp'
 
 type LoginMode = 'phone' | 'email'
 
@@ -48,6 +49,9 @@ export function LoginForm() {
   const [otpPhone, setOtpPhone] = useState('')
   const [otpEmail, setOtpEmail] = useState<string | undefined>(undefined)
   const [otpCode, setOtpCode] = useState('')
+  // 驗證碼這次送到哪：簡訊（預設）或 Email（收不到簡訊時的備援）；sentTo 是遮過的信箱
+  const [otpVia, setOtpVia] = useState<OtpChannel>('sms')
+  const [otpSentTo, setOtpSentTo] = useState<string | null>(null)
   const [otpSubmitting, setOtpSubmitting] = useState(false)
   const [cooldown, setCooldown] = useState(0)
   const passwordRef = useRef('')
@@ -108,6 +112,8 @@ export function LoginForm() {
       passwordRef.current = data.password
       setOtpPhone(result.phone)
       setOtpEmail(undefined)
+      setOtpVia(result.via)
+      setOtpSentTo(result.sentTo)
       setOtpStep(true)
       setCooldown(60)
       return
@@ -142,11 +148,20 @@ export function LoginForm() {
     }
   }
 
-  async function handleResendOtp() {
+  // 重新發送：照原本的登入方式再走一次（Email 模式不能用手機表單的值，那邊是空的）。
+  // via 換成另一個管道就是「改寄到 Email／改用簡訊」；server 會重驗密碼、共用 60 秒節流。
+  async function handleResendOtp(via: OtpChannel = otpVia) {
     setServerError(null)
     setCooldown(60)
-    const values = getValues()
-    await login({ ...values, countryCode, next })
+    setOtpCode('')
+    const result = otpEmail
+      ? await loginWithEmail({ email: otpEmail, password: passwordRef.current, next, otpVia: via })
+      : await login({ ...getValues(), countryCode, next, otpVia: via })
+    if (result?.requireOtp) {
+      setOtpVia(result.via)
+      setOtpSentTo(result.sentTo)
+    }
+    if (result?.error) setServerError(result.error)
   }
 
   async function onEmailSubmit(e: FormEvent) {
@@ -164,10 +179,12 @@ export function LoginForm() {
     try {
       const result = await loginWithEmail({ email: email.trim(), password: emailPassword, next })
       if (result?.requireOtp) {
-        // superadmin — 切到 OTP 步驟（OTP 仍發到手機，但最後用 email 完成登入）
+        // superadmin — 切到 OTP 步驟（OTP 預設發到手機，最後用 email 完成登入）
         passwordRef.current = emailPassword
         setOtpPhone(result.phone)
         setOtpEmail(email.trim())
+        setOtpVia(result.via)
+        setOtpSentTo(result.sentTo)
         setOtpStep(true)
         setCooldown(60)
         return
@@ -196,7 +213,9 @@ export function LoginForm() {
           </div>
           <h3 className="text-lg font-semibold text-fg-primary">管理員身分驗證</h3>
           <p className="text-center text-sm text-fg-muted">
-            已發送驗證碼至您的手機，請輸入 4 位數驗證碼
+            {otpVia === 'email'
+              ? `已寄送驗證碼至 ${otpSentTo ?? '您的 Email'}，請輸入 4 位數驗證碼`
+              : '已發送驗證碼至您的手機，請輸入 4 位數驗證碼'}
           </p>
         </div>
 
@@ -207,7 +226,7 @@ export function LoginForm() {
             onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 4))}
             type="text"
             inputMode="numeric"
-            placeholder="1234"
+            placeholder="4 位數"
             maxLength={4}
             className="h-11 rounded-xl border-surface-secondary bg-surface-secondary text-center text-lg tracking-[0.5em] placeholder:text-fg-muted focus-visible:border-brand-purple focus-visible:ring-brand-purple/30"
             autoFocus
@@ -243,11 +262,23 @@ export function LoginForm() {
           </button>
           <button
             type="button"
-            onClick={handleResendOtp}
+            onClick={() => handleResendOtp()}
             disabled={cooldown > 0}
             className="text-accent-primary hover:underline disabled:text-fg-muted"
           >
             {cooldown > 0 ? `重新發送 (${cooldown}s)` : '重新發送驗證碼'}
+          </button>
+        </div>
+
+        <div className="text-center text-sm">
+          <button
+            type="button"
+            onClick={() => handleResendOtp(otpVia === 'email' ? 'sms' : 'email')}
+            disabled={cooldown > 0}
+            className="text-accent-primary hover:underline disabled:text-fg-muted"
+          >
+            {otpVia === 'email' ? '改用簡訊接收' : '收不到簡訊？改寄到 Email'}
+            {cooldown > 0 && ` (${cooldown}s)`}
           </button>
         </div>
       </div>

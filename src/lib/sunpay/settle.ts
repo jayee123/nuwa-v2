@@ -6,14 +6,23 @@
  * 搶到的那次才開訂閱，其他次直接回 success。
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { recordGatewayTx } from '@/lib/esafe/ledger'
+import { recordGatewayTx } from '@/lib/gateway-ledger'
+import { PLAN_FULL_NAME } from '@/lib/plans'
 import { getPlanByCode } from '@/lib/queries/plans'
 import type { NotifyBody } from './crypto'
-import { orderKindOf, type OrderKind } from './order'
+import { cardTokenOf, orderKindOf, type OrderKind } from './order'
 import { packToken } from './token-store'
+import { latestCardPayment } from './card-on-file'
 
 const PAY_RESULT_SUCCESS = '10'
 const PAY_RESULT_FAILED = '11'
+
+/**
+ * 收到成功通知時以紅陽為準轉成 paid 的狀態。paid／refunded 不再動。
+ * - failed：仍可能真的扣到錢（例如月扣請求逾時被記失敗、或同一張單重刷成功）
+ * - cancelled：使用者在紅陽視窗付完才回結帳頁按「取消付款」，通知比按鈕晚到
+ */
+const SETTLEABLE_STATUSES = ['pending', 'failed', 'cancelled']
 
 export interface PendingPayment {
   id: string
@@ -43,22 +52,27 @@ export function decideNotify(payment: Pick<PendingPayment, 'amount' | 'status'> 
   if (String(payment.amount) !== body.mn) {
     return { action: 'reject', reason: `金額不符：訂單 ${payment.amount}，通知 ${body.mn ?? '（空）'}` }
   }
-  // 標成 failed 的單仍可能真的扣到錢（例如月扣請求逾時被記失敗、或同一張單重刷成功），
-  // 收到成功通知時以紅陽為準轉成 paid。paid／refunded 則不再動。
-  const isOpen = payment.status === 'pending' || payment.status === 'failed'
-  if (!isOpen) return { action: 'ignore', reason: `已處理過（${payment.status}）` }
+  if (!SETTLEABLE_STATUSES.includes(payment.status)) return { action: 'ignore', reason: `已處理過（${payment.status}）` }
 
   if (body.pay_result === PAY_RESULT_SUCCESS) return { action: 'mark_paid', kind }
   if (body.pay_result === PAY_RESULT_FAILED) {
-    return payment.status === 'pending'
-      ? { action: 'mark_failed', kind }
-      : { action: 'ignore', reason: '已標記失敗' }
+    if (payment.status === 'pending') return { action: 'mark_failed', kind }
+    return { action: 'ignore', reason: payment.status === 'cancelled' ? '使用者已取消' : '已標記失敗' }
   }
   return { action: 'ignore', reason: `pay_result=${body.pay_result ?? '（空）'}，不是最終結果` }
 }
 
+/** 結果從哪來：紅陽通知，或對帳排程去紅陽查回來的（BIL-3） */
+export type SettleOrigin = 'notify' | 'reconcile'
+
+const LEDGER_SOURCE: Record<SettleOrigin, string> = { notify: 'sunpay_v3_notify', reconcile: 'sunpay_v3_reconcile' }
+const FAILED_MESSAGE: Record<SettleOrigin, string> = {
+  notify: '紅陽通知交易失敗',
+  reconcile: '對帳查詢：紅陽顯示交易失敗、取消或逾時未完成',
+}
+
 /** 寫進帳務表的原始資料：只留非敏感欄位（不含 token_key、卡號） */
-function ledgerRaw(body: NotifyBody): Record<string, unknown> {
+function ledgerRaw(body: NotifyBody, origin: SettleOrigin): Record<string, unknown> {
   return {
     td: body.td,
     mn: body.mn,
@@ -68,18 +82,35 @@ function ledgerRaw(body: NotifyBody): Record<string, unknown> {
     trade_no: body.trade_no,
     approve_code: body.approve_code,
     save_card_token_result: body.save_card_token_result,
-    source: 'sunpay_v3_notify',
+    source: LEDGER_SOURCE[origin],
   }
 }
 
+/** 升級也是重新綁卡＋扣款，記 bind_first_charge（tx_type 有 CHECK 限制，不另開類型），帳上註記升級差價 */
 function txTypeOf(kind: OrderKind): 'bind_first_charge' | 'recurring' {
-  return kind === 'first' ? 'bind_first_charge' : 'recurring'
+  return kind === 'recurring' ? 'recurring' : 'bind_first_charge'
 }
 
 function addOneMonth(from: Date): Date {
   const next = new Date(from)
   next.setMonth(next.getMonth() + 1)
   return next
+}
+
+/**
+ * 紅陽記錄的付款時間：pay_date（YYYYMMDD）＋ pay_time（HH:MM 或 HH:MM:SS），台灣時間。
+ * 首次付款的一個月從這裡起算，不是從入帳那一刻 —— 對帳隔天才補入帳時，會員不會多出一天
+ * （PAY-24，Steve 10/20：10/18 付的 XRQ75U 被算成從 10/19 起）。
+ * 沒帶、格式不對、或比現在還晚（時鐘誤差）就用現在。
+ */
+export function paidAtOf(body: Pick<NotifyBody, 'pay_date' | 'pay_time'>, now: Date): Date {
+  const date = body.pay_date?.trim() ?? ''
+  const time = body.pay_time?.trim() ?? ''
+  if (!/^\d{8}$/.test(date) || !/^\d{2}:\d{2}(:\d{2})?$/.test(time)) return now
+  const iso = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T${time.length === 5 ? `${time}:00` : time}+08:00`
+  const paidAt = new Date(iso)
+  if (Number.isNaN(paidAt.getTime()) || paidAt > now) return now
+  return paidAt
 }
 
 async function applyUserPlan(admin: SupabaseClient, userId: string, planCode: string, deadline: Date): Promise<void> {
@@ -98,41 +129,62 @@ async function applyUserPlan(admin: SupabaseClient, userId: string, planCode: st
 }
 
 /**
- * 首次付款成功：先開新訂閱，再收掉同課程其他 active 的。
- * 順序刻意如此 —— 新訂閱沒開成功就什麼都沒改（可以安全重來）；
- * 收舊的失敗只是多一筆 active，不影響權限，記 log 不中斷。
+ * 首次付款成功：先收掉同課程 active 的舊訂閱，再開新的。
+ *
+ * 順序不能反過來：正式庫有 idx_subscriptions_one_active（同會員同課程只能一筆 active，
+ * migration 022 STEP 3），先開新的會撞唯一鍵 —— 10/18 升級單 V3F261018001051XRQ75U
+ * 就是這樣，紅陽補發 7 次全部失敗，錢收了、訂閱沒開。
+ * 新訂閱開失敗就把剛收掉的改回 active 再 throw，等於沒改，紅陽補發或對帳可以安全重來。
  */
-async function activateSubscription(admin: SupabaseClient, payment: PendingPayment, planCode: string, endsAt: Date): Promise<void> {
+async function activateSubscription(
+  admin: SupabaseClient,
+  payment: PendingPayment,
+  planCode: string,
+  startsAt: Date,
+  endsAt: Date,
+): Promise<void> {
   if (!payment.service_id) return
+  const { data: expired, error: expireError } = await admin
+    .from('subscriptions')
+    .update({ status: 'expired' })
+    .eq('user_id', payment.user_id)
+    .eq('service_id', payment.service_id)
+    .eq('status', 'active')
+    .select('id')
+  if (expireError) throw new Error(`收掉舊訂閱失敗：${expireError.message}`)
+
   const { data: created, error: insertError } = await admin
     .from('subscriptions')
     .insert({
       user_id: payment.user_id,
       service_id: payment.service_id,
       plan_name: planCode,
-      starts_at: new Date().toISOString(),
+      starts_at: startsAt.toISOString(),
       ends_at: endsAt.toISOString(),
       status: 'active',
     })
     .select('id')
     .single()
-  if (insertError || !created) throw new Error(`建立訂閱失敗：${insertError?.message ?? '沒有回傳 id'}`)
-
-  const { error: expireError } = await admin
-    .from('subscriptions')
-    .update({ status: 'expired' })
-    .eq('user_id', payment.user_id)
-    .eq('service_id', payment.service_id)
-    .eq('status', 'active')
-    .neq('id', created.id)
-  if (expireError) console.error('[sunpay/notify] 收掉舊訂閱失敗（新訂閱已開，不影響權限）', expireError.message)
+  if (insertError || !created) {
+    await restoreSubscriptions(admin, (expired ?? []).map((s: { id: string }) => s.id))
+    throw new Error(`建立訂閱失敗：${insertError?.message ?? '沒有回傳 id'}`)
+  }
 }
 
-async function findActiveSubscription(admin: SupabaseClient, payment: PendingPayment): Promise<{ id: string; ends_at: string } | null> {
+async function restoreSubscriptions(admin: SupabaseClient, ids: string[]): Promise<void> {
+  if (ids.length === 0) return
+  const { error } = await admin.from('subscriptions').update({ status: 'active' }).in('id', ids)
+  if (error) console.error('[sunpay/notify] 新訂閱沒開成，舊訂閱也改不回 active，需人工處理', { ids, error: error.message })
+}
+
+async function findActiveSubscription(
+  admin: SupabaseClient,
+  payment: PendingPayment,
+): Promise<{ id: string; ends_at: string; plan_name: string | null } | null> {
   if (!payment.service_id) return null
   const { data: sub, error } = await admin
     .from('subscriptions')
-    .select('id, ends_at')
+    .select('id, ends_at, plan_name')
     .eq('user_id', payment.user_id)
     .eq('service_id', payment.service_id)
     .eq('status', 'active')
@@ -141,6 +193,54 @@ async function findActiveSubscription(admin: SupabaseClient, payment: PendingPay
     .maybeSingle()
   if (error) throw new Error(`查訂閱失敗：${error.message}`)
   return sub
+}
+
+/**
+ * 升級（PAY-20）：原訂閱直接改方案，開始日與到期日都不動 ——
+ * 只收了差價（或定價相同不收錢），不能重算一個月；額度週期的錨點是訂閱開始日，不動才不會讓已用次數歸零。
+ * 回傳要記在帳上的註記；找不到進行中的訂閱回 null。
+ */
+async function applyUpgrade(admin: SupabaseClient, payment: PendingPayment, planCode: string): Promise<string | null> {
+  const sub = await findActiveSubscription(admin, payment)
+  if (!sub) return null
+
+  const originalPlan = sub.plan_name
+  const from = PLAN_FULL_NAME[originalPlan ?? ''] ?? originalPlan ?? '原方案'
+  const { error } = await admin.from('subscriptions').update({ plan_name: planCode }).eq('id', sub.id)
+  if (error) throw new Error(`升級訂閱失敗：${error.message}`)
+  try {
+    await applyUserPlan(admin, payment.user_id, planCode, new Date(sub.ends_at))
+  } catch (err) {
+    // 訂閱改回原方案，不留「訂閱升了、會員沒升」的半套狀態
+    await admin.from('subscriptions').update({ plan_name: originalPlan }).eq('id', sub.id)
+    throw err
+  }
+  return `升級差價：${from} → ${PLAN_FULL_NAME[planCode] ?? planCode}，到期日不變`
+}
+
+/**
+ * 定價相同的升級（PAY-20，Jeff 10/18：升方案、留紀錄、不收錢）：不經紅陽，結帳當下直接改方案。
+ * 付款列由 initiate 以 NT$0、pending 建好；改成了標 paid，改不成標 failed。
+ * 沒有經過金流，不記金流帳務；也不存卡片代碼，之後月扣照用原本綁的卡。
+ */
+export async function settleFreeUpgrade(admin: SupabaseClient, payment: PendingPayment): Promise<'paid' | 'failed'> {
+  const planCode = payment.plan_name || 'basic'
+  try {
+    const note = await applyUpgrade(admin, payment, planCode)
+    if (!note) throw new Error('找不到進行中的訂閱')
+  } catch (err) {
+    console.error('[payment/initiate] 免付款升級失敗', { td: payment.payment_uid, error: err instanceof Error ? err.message : err })
+    await admin.from('payments').update({ status: 'failed' }).eq('id', payment.id).eq('status', 'pending')
+    return 'failed'
+  }
+  const { error } = await admin
+    .from('payments')
+    .update({ status: 'paid', paid_at: new Date().toISOString() })
+    .eq('id', payment.id)
+    .eq('status', 'pending')
+  // 方案已經升上去了，只是紀錄沒標成 —— 記 log 待人工補，不讓使用者看到失敗
+  if (error) console.error('[payment/initiate] 免付款升級已生效，但紀錄標 paid 失敗，需人工處理', { td: payment.payment_uid, error: error.message })
+  return 'paid'
 }
 
 export type SettleOutcome = 'paid' | 'paid_needs_review' | 'failed' | 'already_settled'
@@ -173,6 +273,7 @@ async function settleFailed(
   payment: PendingPayment,
   body: NotifyBody,
   kind: OrderKind,
+  origin: SettleOrigin,
 ): Promise<SettleOutcome> {
   const { data: claimed } = await admin
     .from('payments')
@@ -190,18 +291,31 @@ async function settleFailed(
     orderNo: payment.payment_uid,
     gatewayNo: body.trade_no || null,
     errcode: body.pay_result ?? null,
-    errmsg: '紅陽通知交易失敗',
+    errmsg: FAILED_MESSAGE[origin],
     success: false,
-    raw: ledgerRaw(body),
+    raw: ledgerRaw(body, origin),
   })
   if (kind === 'recurring') await downgradeAfterRepeatedFailures(admin, payment.user_id, payment.service_id)
   return 'failed'
 }
 
 /**
+ * 這次入帳沒拿到 token_key 時的帳務備註。
+ * 會員還有能月扣的卡（之前的付款、或這筆先前通知時就存了）→ 寫出會用哪一筆，不必人工；
+ * 一張都沒有才標需人工，請會員到期前重新結帳綁卡。
+ */
+async function missingTokenNote(admin: SupabaseClient, payment: PendingPayment, origin: SettleOrigin): Promise<string> {
+  const card = await latestCardPayment(admin, payment.user_id)
+  if (card) return `這次沒有取得卡片代碼，月扣會用 ${card.payment_uid} 綁的卡`
+  console.error('[sunpay/notify] 付款成功但沒有 token_key，這位會員也沒有其他可用的卡，之後無法月扣', { td: payment.payment_uid, origin })
+  const prefix = origin === 'reconcile' ? '對帳補入帳：查詢不會帶 token_key' : '未取得 token_key'
+  return `${prefix}，這位會員沒有可用的卡，之後無法月扣，需人工請會員到期前重新結帳綁卡`
+}
+
+/**
  * 依 decideNotify 的結果寫 DB。
  *
- * 成功時的順序：搶下付款（pending/failed → paid）→ 會員方案 → 訂閱。
+ * 成功時的順序：搶下付款（pending/failed/cancelled → paid）→ 會員方案 → 訂閱（升級是訂閱 → 會員方案）。
  * 會員方案與訂閱的寫法都可以重做而結果相同（到期日由「原本的訂閱」算出，訂閱最後才改），
  * 所以中途出錯就把付款退回 pending 再 throw，路由回 500，紅陽補發時整段重來不會多給。
  */
@@ -211,14 +325,15 @@ export async function settleNotify(
   body: NotifyBody,
   decision: Extract<NotifyDecision, { action: 'mark_paid' | 'mark_failed' }>,
   tokenKeyHex: string,
+  origin: SettleOrigin = 'notify',
 ): Promise<SettleOutcome> {
-  if (decision.action === 'mark_failed') return settleFailed(admin, payment, body, decision.kind)
+  if (decision.action === 'mark_failed') return settleFailed(admin, payment, body, decision.kind, origin)
 
   const tokenData =
-    decision.kind === 'first' && body.token_key
+    decision.kind !== 'recurring' && body.token_key
       ? packToken(
           {
-            saveCardToken: payment.user_id,
+            saveCardToken: cardTokenOf(payment.id),
             tokenKey: body.token_key,
             tokenLife: body.token_life ?? '',
             boundAt: new Date().toISOString(),
@@ -227,11 +342,12 @@ export async function settleNotify(
         )
       : null
 
+  const paidAt = paidAtOf(body, new Date())
   const { data: claimed, error: claimError } = await admin
     .from('payments')
-    .update({ status: 'paid', paid_at: new Date().toISOString(), ...(tokenData ? { token_data: tokenData } : {}) })
+    .update({ status: 'paid', paid_at: paidAt.toISOString(), ...(tokenData ? { token_data: tokenData } : {}) })
     .eq('id', payment.id)
-    .in('status', ['pending', 'failed'])
+    .in('status', SETTLEABLE_STATUSES)
     .select('id')
   if (claimError) throw new Error(`更新付款狀態失敗：${claimError.message}`)
   if (!claimed || claimed.length === 0) return 'already_settled'
@@ -239,12 +355,16 @@ export async function settleNotify(
   const planCode = payment.plan_name || 'basic'
   const notes: string[] = []
   if (payment.status === 'failed') notes.push('原本標記失敗，依紅陽成功通知改為已付款')
+  if (payment.status === 'cancelled') notes.push('使用者按了取消付款，但紅陽回報付款成功，改為已付款')
 
   try {
     if (decision.kind === 'first') {
-      const endsAt = addOneMonth(new Date())
+      const endsAt = addOneMonth(paidAt)
       await applyUserPlan(admin, payment.user_id, planCode, endsAt)
-      await activateSubscription(admin, payment, planCode, endsAt)
+      await activateSubscription(admin, payment, planCode, paidAt, endsAt)
+    } else if (decision.kind === 'upgrade') {
+      // 付款期間剛好到期被收掉：只收了差價，不能當首次付款開一個月 —— 標 paid、留帳待人工處理
+      notes.push((await applyUpgrade(admin, payment, planCode)) ?? '升級差價已收，但找不到進行中的訂閱，需人工處理（退款或補開）')
     } else {
       const sub = await findActiveSubscription(admin, payment)
       if (!sub) {
@@ -265,9 +385,10 @@ export async function settleNotify(
     throw err
   }
 
-  if (decision.kind === 'first' && !tokenData) {
-    console.error('[sunpay/notify] 首次付款成功但沒有 token_key，這位會員之後無法月扣', { td: payment.payment_uid })
-    notes.push('未取得 token_key，之後無法月扣')
+  if (decision.kind !== 'recurring' && !tokenData) {
+    // 對帳查回來的一定沒有 token_key（查詢不回傳），只有通知會帶。
+    // 先查月扣實際會用的卡（跟 auto-charge 同一個查法），真的沒有才標需人工 —— 10/19 曾沒查就誤報
+    notes.push(await missingTokenNote(admin, payment, origin))
   }
 
   await recordGatewayTx(admin, {
@@ -279,7 +400,7 @@ export async function settleNotify(
     gatewayNo: body.trade_no || null,
     errcode: body.pay_result ?? null,
     success: true,
-    raw: ledgerRaw(body),
+    raw: ledgerRaw(body, origin),
     note: notes.length > 0 ? notes.join('；') : null,
   })
   return notes.some((n) => n.includes('需人工')) ? 'paid_needs_review' : 'paid'

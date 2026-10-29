@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { isTrialActive, trialDialogsLeft, trialFromRow } from '@/lib/launch-gate'
 
 // 試用紀錄列表（含欄位搜尋，Jeff 2026-09-10：後台所有列表都要能過濾）。
 // 資料由 server page 撈好整批傳入，這裡只管顯示與前端過濾。
@@ -9,6 +10,10 @@ export interface TrialTableRow {
   id: string
   started_at: string
   expires_at: string
+  /** 試用期間已用對話次數（migration 034） */
+  dialogs_used: number
+  /** 開試用當下的次數上限快照；null = 不限 */
+  dialog_limit: number | null
   source: string
   invite_code: string | null
   userName: string
@@ -30,6 +35,15 @@ function fmt(iso: string): string {
 function daysLeft(expiresAt: string, now: Date): number {
   return Math.ceil((new Date(expiresAt).getTime() - now.getTime()) / (24 * 60 * 60 * 1000))
 }
+
+// 試用＝天數或對話次數先到者結束（M-12）
+function trialStatus(r: TrialTableRow, now: Date): 'active' | 'dialogs_used_up' | 'expired' {
+  const trial = trialFromRow(r)
+  if (isTrialActive(trial, now)) return 'active'
+  return trial && trialDialogsLeft(trial) === 0 && daysLeft(r.expires_at, now) > 0 ? 'dialogs_used_up' : 'expired'
+}
+
+const STATUS_LABEL = { active: '試用中', dialogs_used_up: '次數用完', expired: '已到期' } as const
 
 export function TrialsTable({ rows: initialRows }: { rows: TrialTableRow[] }) {
   const [search, setSearch] = useState('')
@@ -71,7 +85,7 @@ export function TrialsTable({ rows: initialRows }: { rows: TrialTableRow[] }) {
           r.appName,
           SOURCE_LABEL[r.source] ?? r.source,
           r.invite_code,
-          daysLeft(r.expires_at, now) > 0 ? '試用中' : '已到期',
+          STATUS_LABEL[trialStatus(r, now)],
         ]
           .filter(Boolean)
           .some((v) => String(v).toLowerCase().includes(q)),
@@ -106,6 +120,7 @@ export function TrialsTable({ rows: initialRows }: { rows: TrialTableRow[] }) {
                 <th className="px-4 py-3">來源</th>
                 <th className="px-4 py-3">開始</th>
                 <th className="px-4 py-3">到期</th>
+                <th className="px-4 py-3">對話次數</th>
                 <th className="px-4 py-3">狀態</th>
                 <th className="px-4 py-3 text-right">操作</th>
               </tr>
@@ -113,7 +128,7 @@ export function TrialsTable({ rows: initialRows }: { rows: TrialTableRow[] }) {
             <tbody>
               {shown.map((r) => {
                 const left = daysLeft(r.expires_at, now)
-                const isActive = left > 0
+                const status = trialStatus(r, now)
                 return (
                   <tr key={r.id} className="border-b border-surface-secondary/60 last:border-0">
                     <td className="px-4 py-3">
@@ -127,8 +142,11 @@ export function TrialsTable({ rows: initialRows }: { rows: TrialTableRow[] }) {
                     </td>
                     <td className="px-4 py-3 text-xs text-fg-secondary">{fmt(r.started_at)}</td>
                     <td className="px-4 py-3 text-xs text-fg-secondary">{fmt(r.expires_at)}</td>
+                    <td className="px-4 py-3 text-xs text-fg-secondary tabular-nums">
+                      {r.dialogs_used} / {r.dialog_limit ?? '不限'}
+                    </td>
                     <td className="px-4 py-3">
-                      {isActive ? (
+                      {status === 'active' ? (
                         <span
                           className={`rounded-full px-2.5 py-1 text-xs font-medium ${
                             left <= 3 ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'
@@ -138,7 +156,7 @@ export function TrialsTable({ rows: initialRows }: { rows: TrialTableRow[] }) {
                         </span>
                       ) : (
                         <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-500">
-                          已到期
+                          {STATUS_LABEL[status]}
                         </span>
                       )}
                     </td>
